@@ -1,0 +1,176 @@
+---
+title: "Transactions"
+description: "Query, filter, and inspect processed transactions."
+icon: "arrow-right-arrow-left"
+---
+
+## List transactions
+
+```bash
+GET /api/v1/transactions
+```
+
+Returns a paginated list of transactions for your institution.
+
+### Query parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `page` | integer | Page number (default: 1) |
+| `page_size` | integer | Results per page (default: 50, max: 200) |
+| `start_date` | ISO 8601 | Filter: created at or after |
+| `end_date` | ISO 8601 | Filter: created before |
+| `decision` | string | `ALLOW`, `FLAG`, `STEP_UP`, `HOLD`, `BLOCK` |
+| `customer_id` | UUID | Filter by customer |
+| `channel` | string | `MOBILE`, `ATM`, `POS`, `WEB`, `USSD` |
+| `min_amount` | number | Minimum transaction amount |
+| `max_amount` | number | Maximum transaction amount |
+| `min_score` | integer | Minimum combined risk score |
+
+### Example
+
+```bash
+curl "https://monitor.agregartech.com/api/v1/transactions?decision=FLAG&min_score=90&page_size=25" \
+  -H "X-API-Key: your_api_key_here"
+```
+
+<ResponseExample>
+```json
+{
+  "total": 148,
+  "page": 1,
+  "page_size": 25,
+  "items": [
+    {
+      "transaction_id": "TXN-A1B2C3",
+      "customer_id": "CUST-001",
+      "amount": 12500.00,
+      "currency": "GHS",
+      "transaction_type": "TRANSFER",
+      "channel": "MOBILE",
+      "combined_risk_score": 112,
+      "decision": "FLAG",
+      "created_at": "2026-06-11T14:22:00Z"
+    }
+  ]
+}
+```
+</ResponseExample>
+
+---
+
+## Get transaction detail
+
+```bash
+GET /api/v1/transactions/{transaction_id}
+```
+
+Returns full detail for a single transaction including all scoring layers, triggered rules, and ML explanation.
+
+```bash
+curl https://monitor.agregartech.com/api/v1/transactions/TXN-A1B2C3 \
+  -H "X-API-Key: your_api_key_here"
+```
+
+<ResponseExample>
+```json
+{
+  "transaction_id": "TXN-A1B2C3",
+  "customer_id": "CUST-001",
+  "amount": 12500.00,
+  "currency": "GHS",
+  "transaction_type": "TRANSFER",
+  "channel": "MOBILE",
+  "sender_account": "0241234567",
+  "receiver_account": "0209876543",
+  "receiver_name": "John Appiah",
+  "combined_risk_score": 112,
+  "customer_risk_score": 45,
+  "transaction_risk_score": 42,
+  "behavioral_risk_score": 25,
+  "decision": "FLAG",
+  "triggered_rules": ["R-V01", "R-A05"],
+  "risk_factors": [
+    "Transaction count spike — 11 transfers in last hour",
+    "Amount 2.8σ above 30-day mean"
+  ],
+  "ml_score": 0.79,
+  "model_used": "ensemble",
+  "ml_explanation": {
+    "top_features": [
+      {"feature": "velocity_spike_flag", "shap_value": 0.28},
+      {"feature": "amount_zscore", "shap_value": 0.21},
+      {"feature": "transaction_count_1h", "shap_value": 0.17}
+    ]
+  },
+  "alert_id": "ALT-001234",
+  "created_at": "2026-06-11T14:22:00Z",
+  "processed_at": "2026-06-11T14:22:01Z"
+}
+```
+</ResponseExample>
+
+---
+
+## Transaction timeline
+
+```bash
+GET /api/v1/transactions/{transaction_id}/timeline
+```
+
+Returns the processing events for a single transaction in chronological order.
+
+<ResponseExample>
+```json
+{
+  "transaction_id": "TXN-A1B2C3",
+  "events": [
+    {
+      "timestamp": "2026-06-11T14:22:00.001Z",
+      "event": "RECEIVED",
+      "detail": "Transaction ingested via REST"
+    },
+    {
+      "timestamp": "2026-06-11T14:22:00.120Z",
+      "event": "ENRICHED",
+      "detail": "Customer context and 30d baseline loaded"
+    },
+    {
+      "timestamp": "2026-06-11T14:22:00.250Z",
+      "event": "SCORED",
+      "detail": "combined_risk_score=112"
+    },
+    {
+      "timestamp": "2026-06-11T14:22:00.310Z",
+      "event": "DECIDED",
+      "detail": "FLAG — rules: R-V01, R-A05"
+    },
+    {
+      "timestamp": "2026-06-11T14:22:00.340Z",
+      "event": "ALERT_CREATED",
+      "detail": "ALT-001234"
+    }
+  ]
+}
+```
+</ResponseExample>
+
+---
+
+## Export transactions
+
+```bash
+GET /api/v1/transactions/export
+```
+
+Downloads a CSV of transactions matching the same query parameters as the list endpoint.
+
+```bash
+curl "https://monitor.agregartech.com/api/v1/transactions/export?start_date=2026-06-01&decision=FLAG" \
+  -H "X-API-Key: your_api_key_here" \
+  -o transactions.csv
+```
+
+<Note>
+  Exports are capped at 10,000 rows. For larger datasets, page through the list endpoint or contact Agregar for a bulk extract.
+</Note>

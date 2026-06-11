@@ -1,0 +1,106 @@
+---
+title: "Background Jobs"
+description: "Celery tasks, scheduled jobs, and the Kafka consumer pipeline."
+icon: "gears"
+---
+
+## Overview
+
+Background processing is handled by **Celery** (task queue) + **Celery Beat** (cron scheduler), backed by Redis. The Kafka consumer runs as a dedicated container for event fan-out.
+
+---
+
+## Scheduled jobs (Celery Beat)
+
+| Task name | Schedule | Description |
+|---|---|---|
+| `retrain-xgboost-model` | Sunday 05:00 UTC | Weekly XGBoost retrain from labelled transactions |
+| `compute-drift-report` | Daily 03:00 UTC | KS + PSI drift check against 30d baseline |
+| `refresh-sanctions-lists` | Daily 02:00 UTC | Pull updated OFAC/UN/EU/OpenSanctions data |
+| `auto-close-stale-alerts` | Daily 01:00 UTC | Close resolved alerts older than 30 days with no SAR |
+| `generate-daily-metrics` | Daily 00:30 UTC | Pre-compute summary metrics for dashboard |
+| `travel-rule-expiry-check` | Every 6 hours | Flag Travel Rule records approaching 24h window |
+
+---
+
+## On-demand tasks
+
+| Task | Trigger |
+|---|---|
+| Full transaction processing | `POST /ingestion/transaction` (async path) |
+| Batch file processing | `POST /ingestion/batch` |
+| SAR narrative generation | `POST /cases/{id}/sar-filing` |
+| CTR auto-generation | High-value transaction crosses threshold |
+| ML label propagation | Alert resolved / SAR filed |
+
+---
+
+## Kafka consumer
+
+The `tm-kafka-consumer` container listens on the `transactions` topic and fans out each event to the full processing pipeline:
+
+```
+Kafka topic: transactions
+    │
+    ▼
+KafkaConsumer
+    ├── AnomalyDetectionEngine (15 rules + 103 ezrules)
+    ├── RiskScoringEngine (3-layer, 0–300)
+    ├── MLScoringService (ensemble)
+    ├── DecisionEngine
+    └── AlertService (if FLAG/HOLD/BLOCK)
+```
+
+The consumer is designed for at-least-once delivery. Idempotency is enforced by unique constraint on `transaction_id`.
+
+---
+
+## Monitoring Celery
+
+```bash
+# Flower UI
+https://monitor.agregartech.com/flower
+
+# CLI
+docker exec tm-worker celery -A app.tasks inspect active
+docker exec tm-beat celery -A app.tasks inspect scheduled
+```
+
+---
+
+## Celery async pattern
+
+All Celery tasks that call async code must use `_run_async()` from `app/tasks/_utils.py`:
+
+```python
+from app.tasks._utils import _run_async
+
+@celery_app.task
+def my_task():
+    return _run_async(some_async_function())
+```
+
+<Warning>
+  Never use `asyncio.run()` or `get_event_loop()` directly inside Celery tasks. These leak asyncpg connections across event loops, causing `combined_risk_score=0` bugs where DB queries silently fail.
+</Warning>
+
+---
+
+## Adding a new scheduled task
+
+1. Define the task in `app/tasks/`
+2. Register it in the Beat schedule in `app/core/celery_app.py`:
+
+```python
+"my-new-task": {
+    "task": "my-new-task",
+    "schedule": crontab(hour=4, minute=0),
+    "options": {"queue": "default"},
+},
+```
+
+3. Restart the Beat container:
+
+```bash
+docker compose --env-file ../.env -f docker/docker-compose.yml restart beat
+```

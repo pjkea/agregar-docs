@@ -1,0 +1,120 @@
+---
+title: "Data Privacy (NDPA)"
+description: "Nigeria Data Protection Act compliance — DSAR handling, consent, and PII management."
+icon: "lock"
+---
+
+## Overview
+
+The system includes a built-in NDPA (Nigeria Data Protection Act) compliance module covering:
+
+- **Data Subject Access Requests (DSARs)** — customers requesting access to, correction of, or deletion of their data
+- **Consent management** — recording and verifying customer consent for data processing
+- **PII handling** — audit trail for all access to personally identifiable information
+
+<Note>
+  NDPA compliance is active for the Nigerian jurisdiction (`NGA`). Ghana's Data Protection Commission (DPC) provisions use the same module.
+</Note>
+
+---
+
+## Data Subject Access Requests
+
+DSARs are scoped to your institution. An analyst or compliance officer can submit a DSAR on behalf of a customer, or it can be submitted programmatically from a customer portal.
+
+### Submit a DSAR
+
+```bash
+POST /api/v1/ndpa/dsar
+```
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/ndpa/dsar \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "customer_id": "CUST-001",
+    "request_type": "ACCESS",
+    "notes": "Customer requested all data held on their account via call centre."
+  }'
+```
+
+### Request types
+
+| Type | Description |
+|---|---|
+| `ACCESS` | Provide a copy of all data held about the customer |
+| `RECTIFICATION` | Correct inaccurate data |
+| `ERASURE` | Delete data (subject to AML retention requirements) |
+| `RESTRICTION` | Limit processing of data |
+| `PORTABILITY` | Export data in a machine-readable format |
+| `OBJECTION` | Object to a specific processing activity |
+
+### List DSARs
+
+```bash
+GET /api/v1/ndpa/dsar
+```
+
+### Complete a DSAR
+
+```bash
+POST /api/v1/ndpa/dsar/{request_id}/complete
+```
+
+### Reject a DSAR
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/ndpa/dsar/DSAR-000123/reject \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "reason": "AML_RETENTION",
+    "notes": "Transaction records cannot be erased within the mandatory 7-year retention window."
+  }'
+```
+
+---
+
+## Response deadline
+
+Under NDPA, DSARs must be completed within **21 days**. The system:
+
+- Sets a deadline automatically at DSAR creation
+- Surfaces overdue DSARs in the compliance dashboard
+- Sends webhook notifications 7 days and 1 day before the deadline
+
+---
+
+## Consent management
+
+```bash
+POST /api/v1/ndpa/consent           # record consent
+GET  /api/v1/ndpa/consent/{customer_id}  # get consent status
+```
+
+---
+
+## PII access audit
+
+All staff access to PII fields (name, phone, account number) is logged:
+
+```bash
+GET /api/v1/audit-trail?event_type=PII_ACCESS&customer_id={customer_id}
+```
+
+---
+
+## Data retention
+
+| Data type | Retention period | Basis |
+|---|---|---|
+| Transaction records | 7 years | FATF / AML regulations |
+| Alert and case records | 7 years | Regulatory requirement |
+| STR/CTR filings | 10 years | FIC requirement |
+| DSAR records | 3 years | NDPA |
+| Audit logs | 7 years | Internal policy |
+
+<Warning>
+  PII encryption is partially implemented. The `scripts/encrypt_pii_fields.py` migration has not yet been run in all environments. Contact Agregar if you need a full PII encryption status report for your deployment.
+</Warning>

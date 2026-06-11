@@ -1,0 +1,104 @@
+---
+title: "goAML — STR & CTR Filing"
+description: "Generating and submitting Suspicious Transaction Reports and Currency Transaction Reports to regulators."
+icon: "file-contract"
+---
+
+## Overview
+
+The system generates **goAML-compliant XML** for both Suspicious Transaction Reports (STR) and Currency Transaction Reports (CTR). These can be submitted directly to the Ghana Financial Intelligence Centre (FIC) and supported neighbouring regulators.
+
+---
+
+## Filing workflow
+
+```
+Transaction flagged → Alert created → Case opened →
+SAR/STR drafted → Four-eyes approval → Filed → goAML XML generated
+```
+
+### Step 1 — Case from alert
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/cases \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "alert_id": "ALT-001234",
+    "title": "Suspicious layering pattern",
+    "description": "Customer made 12 transfers within 2 hours to new recipients"
+  }'
+```
+
+### Step 2 — File STR from case
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/cases/{case_id}/sar-filing \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filing_type": "STR",
+    "narrative": "Customer exhibited structuring behaviour consistent with layering...",
+    "jurisdiction_code": "GHA"
+  }'
+```
+
+### Step 3 — Approve the filing
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/approvals/{approval_id}/approve \
+  -H "Authorization: Bearer eyJ..."
+```
+
+On approval, the STR is marked `FILED` and a goAML XML snapshot is captured.
+
+---
+
+## Retrieve goAML XML
+
+```bash
+# STR XML
+curl https://monitor.agregartech.com/api/v1/str-reports/{report_id}/goaml-xml \
+  -H "X-API-Key: your_api_key_here"
+
+# CTR XML
+curl https://monitor.agregartech.com/api/v1/ctr-reports/{report_id}/goaml-xml \
+  -H "X-API-Key: your_api_key_here"
+```
+
+<Warning>
+  If you receive `409 goAML XML was not captured for this filing`, structured JSON data is still available via `GET /filings/{id}`. Only the XML snapshot is missing (filings created before Phase 6).
+</Warning>
+
+---
+
+## CTR thresholds
+
+| Jurisdiction | Cash CTR threshold | Default currency |
+|---|---|---|
+| Ghana (GHA) | GHS 50,000 | GHS |
+| Nigeria (NGA) | NGN 5,000,000 | NGN |
+| Kenya (KEN) | KES 1,000,000 | KES |
+
+---
+
+## Immutable filing snapshots
+
+Once filed, a goAML XML snapshot is stored immutably alongside the filing record:
+
+- The regulator receives exactly the same document that is on record
+- Amendments generate a new filing rather than overwriting the original
+- The full audit trail links alert → case → SAR → filing → XML
+
+---
+
+## Regulator access
+
+Regulator institutions (`REGULATOR_VIEWER` role) can access filed reports for their jurisdiction:
+
+```bash
+curl https://monitor.agregartech.com/api/v1/filings?jurisdiction=GHA&status=FILED \
+  -H "X-API-Key: regulator_api_key"
+```
+
+Regulator access is read-only and scoped to their jurisdiction.

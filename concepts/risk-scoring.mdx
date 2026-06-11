@@ -1,0 +1,119 @@
+---
+title: "Risk Scoring"
+description: "How the 0–300 composite risk score is built from three independent layers."
+icon: "gauge"
+---
+
+## Score architecture
+
+Every transaction receives a **composite risk score** from 0 to 300, built from three independent layers that are summed and capped:
+
+```
+composite = min(customer_score + transaction_score + behavioral_score, 300)
+```
+
+| Layer | Max contribution | Source |
+|---|---|---|
+| **Customer risk** | 100 | Static profile: PEP status, jurisdiction, account age |
+| **Transaction risk** | 100 | Real-time signals: amount, channel, velocity, counterparty |
+| **Behavioral risk** | 100 | Historical patterns: deviation from customer baseline |
+
+---
+
+## Decision thresholds
+
+The composite score maps to a decision:
+
+| Score | Decision | Meaning |
+|---|---|---|
+| 0–89 | `ALLOW` | Transaction proceeds normally |
+| 90–119 | `FLAG` | Alert created; transaction proceeds; analyst queued for review |
+| 120–149 | `STEP_UP` | Step-up verification requested before transaction is released |
+| 150–199 | `HOLD` | Transaction held pending manual review |
+| 200–300 | `BLOCK` | Transaction blocked |
+
+<Note>
+  Thresholds are configurable per jurisdiction. The values above are the defaults for Ghana (GHA).
+</Note>
+
+---
+
+## Override triggers
+
+Certain conditions bypass the score thresholds and force specific decisions regardless of score:
+
+| Trigger | Forced decision |
+|---|---|
+| PEP match (confirmed) | `HOLD` |
+| Sanctions match ≥ 95% | `BLOCK` |
+| Sanctions match 80–94% | `HOLD` (pending review) |
+| High-value cash (above CTR threshold) | `FLAG` + CTR draft |
+| FATF high-risk jurisdiction counterparty | Score boost + `FLAG` minimum |
+| Travel Rule threshold exceeded | `FLAG` + Travel Rule fields required |
+
+---
+
+## Customer risk layer
+
+Computed once per customer and cached until their profile changes.
+
+| Signal | Score contribution |
+|---|---|
+| PEP status | +40 |
+| High-risk jurisdiction | +25 |
+| Account age < 30 days | +20 |
+| Missing occupation | +10 |
+| Business account | +5 |
+
+---
+
+## Transaction risk layer
+
+Computed fresh on every transaction.
+
+| Signal | Score contribution |
+|---|---|
+| Amount exceeds CTR threshold | +30 |
+| Cross-border to high-risk country | +20 |
+| Channel = `ATM` (cash withdrawal) | +15 |
+| Round-number amount | +10 |
+| No receiver ID on Transfer | +10 |
+| Known trusted device | −5 |
+
+---
+
+## Behavioral risk layer
+
+Compares this transaction to the customer's 30-day rolling baseline.
+
+| Signal | Score contribution |
+|---|---|
+| Amount > 3σ above customer mean | +30 |
+| Transaction count spike (last 1h > baseline) | +20 |
+| Unusual channel for this customer | +15 |
+| Unusual time of day | +10 |
+| New counterparty (never transacted before) | +5 |
+
+---
+
+## Score in the response
+
+```json
+{
+  "transaction_id": "TXN-A1B2C3",
+  "combined_risk_score": 127,
+  "decision": "STEP_UP",
+  "customer_risk_score": 45,
+  "transaction_risk_score": 55,
+  "behavioral_risk_score": 27,
+  "risk_factors": [
+    "PEP account",
+    "Amount 3.2σ above 30-day mean",
+    "Cross-border to NG"
+  ],
+  "ml_score": 0.74,
+  "model_used": "ensemble"
+}
+```
+
+See [Decision Engine](/concepts/decision-engine) for how the score maps to the final decision and what happens next.

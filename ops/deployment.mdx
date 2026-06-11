@@ -1,0 +1,124 @@
+---
+title: "Deployment"
+description: "How the transaction monitor is deployed, scaled, and updated."
+icon: "server"
+---
+
+## Architecture
+
+The transaction monitor runs as **10 Docker containers** on a single EC2 instance (`t3.xlarge`, 16 GB RAM), managed by Docker Compose and fronted by nginx with Let's Encrypt TLS.
+
+```
+Internet → nginx (TLS) → tm-app (FastAPI :8020)
+                       → tm-flower (Celery UI :5555)
+
+tm-app ──────────────────→ tm-postgres (TimescaleDB :5432)
+                         → tm-redis (:6379)
+                         → tm-kafka (:9092)
+
+Celery workers ─────────→ tm-worker
+                         → tm-beat (scheduler)
+                         → tm-kafka-consumer
+```
+
+### Container inventory
+
+| Container | Role |
+|---|---|
+| `tm-nginx` | Reverse proxy + TLS termination |
+| `tm-app` | FastAPI API server |
+| `tm-worker` | Celery background task worker |
+| `tm-beat` | Celery Beat scheduler |
+| `tm-flower` | Celery monitoring UI |
+| `tm-postgres` | TimescaleDB (PostgreSQL 15) |
+| `tm-redis` | Redis broker + cache |
+| `tm-kafka` | Kafka event bus (KRaft mode) |
+| `tm-kafka-consumer` | Kafka consumer fan-out |
+| `tm-uptime-kuma` | Uptime monitoring |
+
+---
+
+## Standard deploy workflow
+
+```bash
+# 1. Merge PR to main on GitHub
+
+# 2. SSH to the server
+ssh aml-server
+cd /home/ubuntu/transaction-monitor
+
+# 3. Pull latest
+git pull origin main
+
+# 4. If Python dependencies changed
+docker compose -f docker/docker-compose.yml --env-file ../.env build app worker beat
+
+# 5. Bring containers up
+docker compose -f docker/docker-compose.yml --env-file ../.env up -d
+
+# 6. Run pending migrations (if any)
+docker exec -w /app tm-app alembic upgrade head
+```
+
+<Warning>
+  Always run compose from the `docker/` directory using `--env-file ../.env`. Running without the env file creates containers with blank DB credentials.
+</Warning>
+
+---
+
+## Key environment variables
+
+| Variable | Description |
+|---|---|
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials |
+| `SECRET_KEY` | JWT signing secret |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated allowed origins (no wildcard in prod) |
+| `FLOWER_BASIC_AUTH` | Celery Flower auth (`admin:password`) |
+| `TENANT_JURISDICTION` | `GHA`, `NGA`, or `KEN` |
+| `STEPUP_VERIFICATION_URL` | External step-up verification service |
+
+Run `scripts/generate-secrets.sh` to rotate JWT and API secrets.
+
+---
+
+## Database migrations
+
+```bash
+docker exec -w /app tm-app alembic current     # check revision
+docker exec -w /app tm-app alembic upgrade head # apply pending
+docker exec -w /app tm-app alembic downgrade -1 # roll back one
+```
+
+Never edit the database schema directly in production.
+
+---
+
+## Celery workers
+
+Workers are volume-mounted from `app/`, so code changes take effect immediately for the API. However, **Celery workers must be restarted** after any change to shared modules:
+
+```bash
+docker compose --env-file ../.env -f docker/docker-compose.yml restart worker beat
+```
+
+---
+
+## Health check
+
+```bash
+curl https://monitor.agregartech.com/health
+# → {"status": "ok", "db": "ok", "redis": "ok"}
+```
+
+---
+
+## Ports reference
+
+| Service | External | Internal |
+|---|---|---|
+| API (no nginx) | 8021 | 8020 |
+| Nginx HTTPS | 8445 | 443 |
+| Postgres | 5438 | 5432 |
+| Redis | 6381 | 6379 |
+| Flower | 5555 | 5555 |
+| Uptime Kuma | 3001 | 3001 |

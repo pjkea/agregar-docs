@@ -1,0 +1,172 @@
+---
+title: "Cases"
+description: "Open, manage, and file Suspicious Activity Reports from alert investigations."
+icon: "folder-open"
+---
+
+## Overview
+
+A case groups one or more related alerts into a single investigation. Cases are the escalation path from an alert to a **Suspicious Transaction Report (STR)** or Currency Transaction Report (CTR). Once filed, the case is immutable and a goAML XML snapshot is captured.
+
+---
+
+## Open a case
+
+```bash
+POST /api/v1/cases
+```
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/cases \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "alert_id": "ALT-001234",
+    "title": "Suspected layering — 12 rapid transfers",
+    "description": "Customer made 12 outbound transfers over 2 hours to accounts they have not previously transacted with."
+  }'
+```
+
+<ResponseExample>
+```json
+{
+  "case_id": "CASE-000456",
+  "alert_id": "ALT-001234",
+  "transaction_id": "TXN-A1B2C3",
+  "customer_id": "CUST-001",
+  "title": "Suspected layering — 12 rapid transfers",
+  "status": "OPEN",
+  "created_by": "analyst@institution.com",
+  "created_at": "2026-06-11T15:00:00Z"
+}
+```
+</ResponseExample>
+
+---
+
+## List cases
+
+```bash
+GET /api/v1/cases
+```
+
+### Query parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `status` | string | `OPEN`, `UNDER_INVESTIGATION`, `PENDING_FILING`, `FILED`, `CLOSED` |
+| `customer_id` | UUID | Filter by customer |
+| `assigned_to` | UUID | Filter by assigned investigator |
+| `start_date` | ISO 8601 | Opened at or after |
+| `end_date` | ISO 8601 | Opened before |
+| `page` | integer | Page number (default: 1) |
+| `page_size` | integer | Results per page (default: 50) |
+
+---
+
+## Get case detail
+
+```bash
+GET /api/v1/cases/{case_id}
+```
+
+Returns the full case record, all linked alerts, SAR filing status, four-eyes approval history, and audit trail.
+
+---
+
+## Update case
+
+```bash
+PATCH /api/v1/cases/{case_id}
+```
+
+```bash
+curl -X PATCH https://monitor.agregartech.com/api/v1/cases/CASE-000456 \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{"status": "UNDER_INVESTIGATION", "assigned_to": "investigator-uuid"}'
+```
+
+---
+
+## Add attachment
+
+```bash
+POST /api/v1/cases/{case_id}/attachments
+```
+
+Upload supporting documents (PDF, images). Maximum 10 MB per file.
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/cases/CASE-000456/attachments \
+  -H "Authorization: Bearer eyJ..." \
+  -F "file=@transaction_statement.pdf" \
+  -F "label=Bank statement — last 90 days"
+```
+
+---
+
+## File SAR/STR
+
+```bash
+POST /api/v1/cases/{case_id}/sar-filing
+```
+
+Initiates the four-eyes approval workflow. A second user with `APPROVE_STR` permission must approve before the report is formally filed.
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/cases/CASE-000456/sar-filing \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filing_type": "STR",
+    "narrative": "After 14 days of investigation we determined that the customer exhibited structuring behaviour consistent with layering...",
+    "jurisdiction_code": "GHA"
+  }'
+```
+
+<ResponseExample>
+```json
+{
+  "filing_id": "FILING-000789",
+  "case_id": "CASE-000456",
+  "filing_type": "STR",
+  "status": "PENDING_APPROVAL",
+  "approval_id": "APPR-001122",
+  "message": "STR draft created. Approval required from a second authorised user before submission."
+}
+```
+</ResponseExample>
+
+<Warning>
+  Once approved and filed, the case becomes immutable and the goAML XML snapshot is captured. Amendments require opening a new supplementary case.
+</Warning>
+
+---
+
+## Download goAML XML
+
+```bash
+GET /api/v1/str-reports/{report_id}/goaml-xml
+```
+
+Returns the goAML-compliant XML for direct submission to the FIC. Only available after the filing status is `FILED`.
+
+See the [goAML filing guide](/compliance/goaml) for the full submission workflow.
+
+---
+
+## Case status lifecycle
+
+```
+OPEN → UNDER_INVESTIGATION → PENDING_FILING → FILED
+                                             → CLOSED (no SAR needed)
+```
+
+| Status | Description |
+|---|---|
+| `OPEN` | Case created, awaiting assignment |
+| `UNDER_INVESTIGATION` | Analyst actively reviewing |
+| `PENDING_FILING` | SAR drafted, awaiting four-eyes approval |
+| `FILED` | Approved and submitted; immutable |
+| `CLOSED` | Investigation complete; no SAR required |

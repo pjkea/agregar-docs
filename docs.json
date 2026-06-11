@@ -44,6 +44,31 @@
               "guides/webhooks",
               "guides/errors"
             ]
+          },
+          {
+            "group": "Platform Concepts",
+            "pages": [
+              "concepts/risk-scoring",
+              "concepts/decision-engine",
+              "concepts/detection-rules",
+              "concepts/ml-scoring"
+            ]
+          },
+          {
+            "group": "Compliance",
+            "pages": [
+              "compliance/goaml",
+              "compliance/sanctions",
+              "compliance/data-privacy"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "ops/deployment",
+              "ops/background-jobs",
+              "ops/runbook"
+            ]
           }
         ]
       },
@@ -53,7 +78,10 @@
           {
             "group": "API Reference",
             "pages": [
-              "api-reference/overview"
+              "api-reference/overview",
+              "api-reference/transactions",
+              "api-reference/alerts",
+              "api-reference/cases"
             ]
           }
         ]

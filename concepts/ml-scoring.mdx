@@ -1,0 +1,103 @@
+---
+title: "ML Scoring"
+description: "Ensemble of CatBoost, LightGBM, River, and XGBoost with drift detection and champion/challenger."
+icon: "brain"
+---
+
+## Ensemble architecture
+
+Every transaction receives an ML fraud probability score (0–1) from an ensemble of four models combined via **weighted soft-vote**:
+
+| Model | Weight | Training |
+|---|---|---|
+| CatBoost | 0.40 | Offline — MoMTSim 1.7M transactions |
+| River ARF | 0.25 | Online — updates in real time after every labelled transaction |
+| LightGBM | 0.20 | Offline — MoMTSim 1.7M transactions |
+| XGBoost | 0.15 | Weekly retrain from analyst decisions |
+
+If a model fails to load, its weight is redistributed proportionally. The `model_used` field reflects this: `"ensemble"` (all four) or `"ensemble_degraded"` (subset).
+
+Weights can be overridden via environment variables:
+- `ENSEMBLE_WEIGHT_CATBOOST` (default 0.40)
+- `ENSEMBLE_WEIGHT_LGBM` (default 0.20)
+- `ENSEMBLE_WEIGHT_RIVER` (default 0.25)
+- `ENSEMBLE_WEIGHT_XGBOOST` (default 0.15)
+
+---
+
+## Feature set
+
+The ensemble uses **24 features** derived from the enriched transaction context:
+
+**Numeric (18):** `amount`, `hour_of_day`, `day_of_week`, `customer_risk_score`, `transaction_count_1h`, `transaction_count_24h`, `transaction_count_7d`, `avg_amount_30d`, `amount_zscore`, `distinct_receivers_7d`, `distinct_countries_7d`, `account_age_days`, `days_since_last_txn`, `is_weekend`, `is_night`, `cross_border`, `high_value_flag`, `velocity_spike_flag`
+
+**Categorical (6):** `transaction_type`, `channel`, `flow_type`, `risk_level`, `receiver_country`, `customer_type`
+
+---
+
+## Online learning (River ARF)
+
+The River Adaptive Random Forest model updates immediately after every analyst decision:
+
+1. Analyst resolves an alert (True Positive) or marks it False Positive
+2. `LabelingService` calls `ensemble_orchestrator.learn(transaction, label)`
+3. River ARF updates its trees in real time
+
+This means the model adapts to new fraud patterns within minutes of the first confirmed case.
+
+---
+
+## Self-learning (XGBoost)
+
+Labels from analyst decisions and SAR filings feed the XGBoost retraining pipeline:
+
+- **Source:** Alert resolutions and Case SAR filings → `LabeledTransaction` table
+- **Gate:** Minimum 50 fraud labels + 100 legitimate labels before retraining begins
+- **Schedule:** Weekly retrain every Sunday at 05:00 UTC
+- **Promotion:** New model replaces the champion automatically if it outperforms on held-out validation
+
+---
+
+## Drift detection
+
+The drift monitor runs daily and compares the current transaction distribution against a 30-day rolling baseline:
+
+| Test | What it measures |
+|---|---|
+| **KS test** (Kolmogorov-Smirnov) | Distribution shift in individual features |
+| **PSI** (Population Stability Index) | Overall population drift: <0.1 stable, 0.1–0.25 monitor, >0.25 retrain |
+
+If PSI > 0.25 on amount or velocity features, the weekly retrain is triggered immediately.
+
+---
+
+## Champion/challenger
+
+The model registry tracks every trained version:
+
+```
+TRAINING → CHAMPION → RETIRED
+```
+
+At any time exactly one model of each type holds `CHAMPION` status.
+
+---
+
+## ML score in the transaction response
+
+```json
+{
+  "transaction_id": "TXN-A1B2C3",
+  "ml_score": 0.84,
+  "model_used": "ensemble",
+  "ml_explanation": {
+    "top_features": [
+      {"feature": "amount_zscore", "shap_value": 0.31},
+      {"feature": "velocity_spike_flag", "shap_value": 0.22},
+      {"feature": "cross_border", "shap_value": 0.14}
+    ]
+  }
+}
+```
+
+SHAP values explain which features drove the score for this specific transaction, making it auditable for compliance and analyst review.

@@ -1,0 +1,121 @@
+---
+title: "Decision Engine"
+description: "How the composite risk score is translated into Allow, Flag, Step-Up, Hold, or Block."
+icon: "traffic-light"
+---
+
+## Decision flow
+
+The decision engine runs after risk scoring and produces the final disposition for every transaction.
+
+```
+composite_risk_score
+        │
+        ▼
+  Override checks ──── PEP match → HOLD
+  (before thresholds)  Sanctions ≥ 95% → BLOCK
+                       FATF high-risk → FLAG minimum
+        │
+        ▼
+  Threshold mapping
+  ┌──────────────────────────────────────────┐
+  │ 0–89   → ALLOW                           │
+  │ 90–119 → FLAG                            │
+  │ 120–149→ STEP_UP                         │
+  │ 150–199→ HOLD                            │
+  │ 200–300→ BLOCK                           │
+  └──────────────────────────────────────────┘
+        │
+        ▼
+  Post-decision actions
+  ├── FLAG: create alert, notify via webhook
+  ├── STEP_UP: call step-up verification service
+  ├── HOLD: create alert, pause transaction
+  └── BLOCK: create alert, reject transaction
+```
+
+---
+
+## Override triggers
+
+These checks run **before** threshold mapping and can force a decision regardless of score:
+
+| Condition | Forced decision | Source |
+|---|---|---|
+| Customer on PEP list (confirmed) | `HOLD` | PEP matching at ingestion |
+| Sanctions match ≥ 95% | `BLOCK` | rapidfuzz 3-pass fuzzy match |
+| Sanctions match 80–94% | `HOLD` | Review tier |
+| FATF/high-risk counterparty jurisdiction | `FLAG` minimum | Jurisdiction config |
+| High-value cash transaction | `FLAG` + CTR draft | Jurisdiction CTR threshold |
+| Travel Rule threshold exceeded | `FLAG` + field requirement | FATF R.16 config |
+
+---
+
+## Step-up verification
+
+When a transaction scores in the `STEP_UP` range (120–149), the decision engine calls an external step-up verification service before releasing or holding the transaction:
+
+| Variable | Purpose |
+|---|---|
+| `STEPUP_VERIFICATION_URL` | External step-up service endpoint |
+| `STEPUP_VERIFICATION_API_KEY` | Auth key for that service |
+| `STEPUP_VERIFICATION_TIMEOUT` | Maximum wait time (default 3s) |
+
+If the step-up service is unreachable or times out, the transaction falls back to `HOLD`.
+
+---
+
+## Post-decision actions
+
+### ALLOW
+Transaction accepted and stored. No alert created.
+
+### FLAG
+- Alert created with priority based on score (`IMMEDIATE` if ≥ 110, `MEDIUM` otherwise)
+- Transaction stored and released
+- Webhook fired
+- Analyst queue updated
+
+### STEP_UP
+- External step-up call fired
+- If verified → `ALLOW`
+- If rejected or timeout → `HOLD`
+
+### HOLD
+- Alert created with `IMMEDIATE` priority
+- Transaction stored but held (not released to recipient)
+- Webhook fired
+- Case auto-created if hold persists > 24h
+
+### BLOCK
+- Alert created with `IMMEDIATE` priority
+- Transaction rejected; not stored as completed
+- Webhook fired
+
+---
+
+## Configuring thresholds
+
+View current jurisdiction thresholds:
+
+```bash
+curl https://monitor.agregartech.com/api/v1/jurisdictions/GHA \
+  -H "X-API-Key: your_api_key_here"
+```
+
+Threshold changes go through four-eyes approval:
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/approvals \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJ..." \
+  -d '{
+    "action_type": "THRESHOLD_CHANGE",
+    "payload": {
+      "jurisdiction_code": "GHA",
+      "changes": { "flag_threshold": 85, "hold_threshold": 145 }
+    }
+  }'
+```
+
+A second approver must call `POST /approvals/{id}/approve` before the change takes effect.

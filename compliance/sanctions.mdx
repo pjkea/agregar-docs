@@ -1,0 +1,125 @@
+---
+title: "Sanctions Screening"
+description: "Real-time OFAC, UN, and EU sanctions screening with fuzzy name matching."
+icon: "shield-halved"
+---
+
+## How screening works
+
+Every transaction is screened against three sanctions lists in real time before a risk score is assigned:
+
+| List | Coverage |
+|---|---|
+| **OFAC SDN** | US Treasury — Specially Designated Nationals |
+| **UN Security Council** | Global consolidated sanctions list |
+| **EU Restrictive Measures** | European Union sanctions |
+| **OpenSanctions** | Aggregated open-source database (PEP + sanctions) |
+
+Screening uses **three-pass fuzzy matching** with `rapidfuzz`:
+
+| Pass | Match score | Decision |
+|---|---|---|
+| Pass 1 — Exact / High | ≥ 95% | `BLOCK` |
+| Pass 2 — Review tier | 80–94% | `HOLD` (pending manual review) |
+| Pass 3 — Clear | < 80% | `CLEAR` |
+
+---
+
+## Screening at ingestion
+
+Sanctions checks run synchronously at transaction ingestion. A BLOCK match rejects the transaction before any other processing:
+
+```json
+{
+  "transaction_id": "TXN-X9Z3Q1",
+  "decision": "BLOCK",
+  "sanctions_result": {
+    "status": "MATCH",
+    "match_score": 97.4,
+    "matched_list": "OFAC_SDN",
+    "matched_name": "Ibrahim Al-Qahtani",
+    "entity_type": "INDIVIDUAL"
+  }
+}
+```
+
+HOLD matches are stored and surfaced as `PENDING_REVIEW` in the sanctions queue.
+
+---
+
+## Sanctions review queue
+
+```bash
+GET /api/v1/watchlists/screening-queue
+```
+
+Returns all transactions in `HOLD` state from sanctions matches awaiting manual review.
+
+---
+
+## Review a match
+
+```bash
+POST /api/v1/watchlists/screening-queue/{match_id}/review
+```
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/watchlists/screening-queue/MATCH-000345/review \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "decision": "FALSE_POSITIVE",
+    "notes": "Different person — customer born 1982 in Accra; SDN entry is a different individual."
+  }'
+```
+
+| Decision | Effect |
+|---|---|
+| `CONFIRMED` | Transaction permanently blocked; SAR filed |
+| `FALSE_POSITIVE` | Hold lifted; transaction released; customer note added |
+
+---
+
+## PEP screening
+
+PEP records are screened separately. A PEP match forces a minimum `HOLD` decision regardless of risk score. PEP data is sourced from OpenSanctions and can be supplemented with custom entries:
+
+```bash
+POST /api/v1/watchlists
+Content-Type: application/json
+
+{
+  "name": "John Mensah Doe",
+  "entity_type": "INDIVIDUAL",
+  "category": "PEP",
+  "reason": "Senior government official, Ministry of Finance",
+  "jurisdiction": "GHA"
+}
+```
+
+---
+
+## Custom watchlists
+
+```bash
+POST   /api/v1/watchlists          # add entry
+GET    /api/v1/watchlists          # list entries
+DELETE /api/v1/watchlists/{id}     # remove entry
+```
+
+Custom entries are screened using the same fuzzy-match logic.
+
+---
+
+## List update schedule
+
+Sanctions lists refresh daily at 02:00 UTC. Check last update time:
+
+```bash
+curl https://monitor.agregartech.com/api/v1/watchlists/list-status \
+  -H "X-API-Key: your_api_key_here"
+```
+
+<Note>
+  Screening adds approximately 15–30 ms to ingestion latency. The USSD fast-path (≤ 2s SLA) runs a lightweight sanctions gate first and defers full scoring to an async background task.
+</Note>

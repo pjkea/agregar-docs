@@ -1,0 +1,120 @@
+---
+title: "Operations Runbook"
+description: "Incident response procedures for common production issues."
+icon: "book"
+---
+
+## Quick reference
+
+| Issue | First check | Fix |
+|---|---|---|
+| API returning 500s | `docker logs tm-app` | See [API errors](#api-500-errors) |
+| DB connection refused | `docker ps` — is tm-postgres running? | See [Database issues](#database-issues) |
+| Celery tasks stuck | Flower UI | See [Celery](#celery-issues) |
+| Kafka consumer lagging | `docker logs tm-kafka-consumer` | See [Kafka](#kafka-issues) |
+| ML scores all zero | Worker logs for asyncpg errors | See [ML scores zero](#ml-scores-are-all-zero) |
+
+---
+
+## API 500 errors
+
+```bash
+docker logs -f tm-app
+docker logs tm-app 2>&1 | grep -A 20 "ERROR"
+```
+
+Common causes:
+
+- **Missing migration** — run `docker exec -w /app tm-app alembic upgrade head`
+- **DB connection pool exhausted** — restart app, investigate slow queries
+- **Import error after code change** — check for syntax errors or missing packages
+
+---
+
+## Database issues
+
+```bash
+docker ps | grep tm-postgres
+docker exec -it tm-postgres psql -U $POSTGRES_USER -d $POSTGRES_DB
+
+# Long-running queries
+SELECT pid, query_start, state, query FROM pg_stat_activity
+WHERE state != 'idle' ORDER BY query_start;
+```
+
+If the container is not starting, check disk space first (`df -h`). TimescaleDB hypertable chunks accumulate — contact Agregar before taking action if disk is nearly full.
+
+---
+
+## Celery issues
+
+```bash
+docker exec tm-worker celery -A app.tasks inspect active
+docker compose --env-file ../.env -f docker/docker-compose.yml restart worker
+docker compose --env-file ../.env -f docker/docker-compose.yml restart beat
+```
+
+---
+
+## Kafka issues
+
+If you see `aiokafka` import errors in `docker logs tm-kafka-consumer`, the consumer is running in degraded mode. This is a known open issue — transactions are still processed via the REST path.
+
+**DUPLICATE_BROKER_REGISTRATION error on Kafka startup:**
+
+```bash
+docker rm -f tm-kafka
+docker compose --env-file ../.env -f docker/docker-compose.yml up -d kafka
+```
+
+Do not set `CLUSTER_ID` in the environment — it causes this error.
+
+---
+
+## ML scores are all zero
+
+Symptoms: `combined_risk_score=0` on all processed transactions, no error in logs.
+
+```bash
+docker logs tm-worker | grep "asyncpg"
+docker compose --env-file ../.env -f docker/docker-compose.yml restart worker
+```
+
+Root cause: async calls inside Celery tasks must use `_run_async()` from `app/tasks/_utils.py`, never `asyncio.run()`.
+
+---
+
+## Nginx / TLS issues
+
+```bash
+docker logs tm-nginx
+docker exec tm-nginx openssl s_client -connect localhost:443 </dev/null 2>/dev/null \
+  | openssl x509 -noout -dates
+docker exec tm-nginx certbot renew
+```
+
+If Let's Encrypt renewal fails, verify port 80 is accessible from the internet (needed for ACME challenge).
+
+---
+
+## Full restart sequence
+
+```bash
+cd /home/ubuntu/transaction-monitor/docker
+docker compose --env-file ../.env -f docker-compose.yml down
+docker compose --env-file ../.env -f docker-compose.yml up -d
+docker exec -w /app tm-app alembic upgrade head
+```
+
+Wait ~30 seconds for the database and Redis to be ready before the app container becomes healthy.
+
+---
+
+## Useful diagnostics
+
+```bash
+docker stats --no-stream              # resource usage per container
+docker system df -v                   # disk usage by container/image
+curl https://monitor.agregartech.com/health
+curl https://monitor.agregartech.com/metrics   # Prometheus metrics
+```

@@ -1,0 +1,164 @@
+---
+title: "Alerts"
+description: "List, investigate, and resolve transaction alerts."
+icon: "bell"
+---
+
+## Overview
+
+An alert is created automatically whenever a transaction decision is `FLAG`, `HOLD`, or `BLOCK`. Alerts are the primary analyst workflow — they link the transaction, triggered rules, the case (if opened), and the resolution.
+
+---
+
+## List alerts
+
+```bash
+GET /api/v1/alerts
+```
+
+### Query parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `status` | string | `OPEN`, `UNDER_REVIEW`, `RESOLVED`, `CLOSED` |
+| `priority` | string | `IMMEDIATE`, `MEDIUM`, `LOW` |
+| `start_date` | ISO 8601 | Alert created at or after |
+| `end_date` | ISO 8601 | Alert created before |
+| `customer_id` | UUID | Filter by customer |
+| `assigned_to` | UUID | Filter by assigned analyst |
+| `page` | integer | Page number (default: 1) |
+| `page_size` | integer | Results per page (default: 50, max: 200) |
+
+### Example
+
+```bash
+curl "https://monitor.agregartech.com/api/v1/alerts?status=OPEN&priority=IMMEDIATE" \
+  -H "X-API-Key: your_api_key_here"
+```
+
+<ResponseExample>
+```json
+{
+  "total": 23,
+  "page": 1,
+  "page_size": 50,
+  "items": [
+    {
+      "alert_id": "ALT-001234",
+      "transaction_id": "TXN-A1B2C3",
+      "customer_id": "CUST-001",
+      "combined_risk_score": 112,
+      "decision": "FLAG",
+      "priority": "IMMEDIATE",
+      "status": "OPEN",
+      "triggered_rules": ["R-V01", "R-A05"],
+      "created_at": "2026-06-11T14:22:00Z"
+    }
+  ]
+}
+```
+</ResponseExample>
+
+---
+
+## Get alert detail
+
+```bash
+GET /api/v1/alerts/{alert_id}
+```
+
+Returns full alert detail including the linked transaction, all risk factors, ML explanation, and audit history.
+
+---
+
+## Assign alert
+
+```bash
+PATCH /api/v1/alerts/{alert_id}
+```
+
+```bash
+curl -X PATCH https://monitor.agregartech.com/api/v1/alerts/ALT-001234 \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{"assigned_to": "user-uuid-here", "status": "UNDER_REVIEW"}'
+```
+
+---
+
+## Resolve alert
+
+```bash
+POST /api/v1/alerts/{alert_id}/resolve
+```
+
+Closes an alert with an analyst decision.
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/alerts/ALT-001234/resolve \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "resolution": "TRUE_POSITIVE",
+    "notes": "Customer confirmed unusual activity; case escalated to SAR."
+  }'
+```
+
+### Resolution values
+
+| Value | Description |
+|---|---|
+| `TRUE_POSITIVE` | Alert is valid; further action may follow |
+| `FALSE_POSITIVE` | Alert was incorrect; ML label recorded for retraining |
+| `INCONCLUSIVE` | Insufficient information to determine |
+| `ESCALATED` | Referred to senior analyst or compliance team |
+
+<Note>
+  Resolving an alert as `FALSE_POSITIVE` or `TRUE_POSITIVE` feeds the XGBoost and River ARF self-learning pipeline. Resolution quality directly improves future model accuracy.
+</Note>
+
+---
+
+## Add note
+
+```bash
+POST /api/v1/alerts/{alert_id}/notes
+```
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/alerts/ALT-001234/notes \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Called customer — confirmed they were abroad and initiated the transfers themselves."}'
+```
+
+---
+
+## Alert statistics
+
+```bash
+GET /api/v1/alerts/stats
+```
+
+```bash
+curl "https://monitor.agregartech.com/api/v1/alerts/stats?window_days=7" \
+  -H "X-API-Key: your_api_key_here"
+```
+
+<ResponseExample>
+```json
+{
+  "window_days": 7,
+  "total_alerts": 412,
+  "open": 23,
+  "resolved": 389,
+  "true_positive_rate": 0.31,
+  "avg_resolution_time_hours": 4.2,
+  "top_triggered_rules": [
+    {"rule_id": "R-V01", "count": 87},
+    {"rule_id": "R-A05", "count": 64},
+    {"rule_id": "R-AF02", "count": 51}
+  ]
+}
+```
+</ResponseExample>

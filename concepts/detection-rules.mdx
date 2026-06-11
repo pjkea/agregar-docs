@@ -1,0 +1,104 @@
+---
+title: "Detection Rules"
+description: "103 production rules covering amount, velocity, behavioral, network, and Africa-specific patterns."
+icon: "list-check"
+---
+
+## Overview
+
+The detection engine runs every transaction through **103 production rules** across seven categories. Rules are evaluated in parallel; each triggering rule contributes its weight to the transaction risk score.
+
+<Note>
+  The rules engine is a platform-level component managed by Agregar. Institution users can see alert results but cannot view or modify rules directly.
+</Note>
+
+---
+
+## Rule categories
+
+| Category | Count | Focus |
+|---|---|---|
+| Amount | 6 | Threshold breaches, round numbers, CTR triggers |
+| Velocity | 7 | Transaction frequency per customer, receiver, or device |
+| Behavioral | 9 | Deviation from historical customer patterns |
+| Network | 8 | Counterparty relationships, circular flows |
+| Africa-specific | 8 | Mobile-money patterns specific to GH/NG/KE |
+| Device fingerprint | 4 | Device sharing, SIM swap, IMEI change |
+| Travel Rule | 1 | FATF R.16 threshold and originator/beneficiary fields |
+| Shadow (pending promotion) | 8 | In A/B testing via shadow deployment |
+
+---
+
+## Rule lifecycle
+
+```
+DRAFT → SHADOW → PRODUCTION → ARCHIVED
+```
+
+| Status | Description |
+|---|---|
+| `DRAFT` | Created but not yet evaluated against transactions |
+| `SHADOW` | Running in parallel; results logged but not counted toward score |
+| `PRODUCTION` | Active; contributes to risk score |
+| `ARCHIVED` | Disabled; kept for audit history |
+
+Promotion from SHADOW → PRODUCTION requires a four-eyes approval (`APPROVE_ACTION` permission).
+
+---
+
+## Shadow deployment
+
+New rules run in shadow mode alongside the production engine. The `ShadowComparisonLog` records results from both engines for every transaction, letting you validate a new rule for ≥14 days and ≥100 transactions before promoting.
+
+---
+
+## Amount rules (examples)
+
+| Rule ID | Trigger | Risk weight |
+|---|---|---|
+| R-A01 | Amount > CTR threshold (cash) | +30 |
+| R-A02 | Amount > STR threshold | +25 |
+| R-A03 | Round-number amount (ends in 000) | +10 |
+| R-A04 | Amount exactly at a common smurfing boundary | +20 |
+| R-A05 | Amount > 10× customer 30-day average | +25 |
+| R-A06 | Zero-value transaction | +5 |
+
+---
+
+## Velocity rules (examples)
+
+| Rule ID | Trigger | Risk weight |
+|---|---|---|
+| R-V01 | > 10 transactions in 1 hour for same customer | +25 |
+| R-V02 | > 5 transfers to same receiver in 24h | +20 |
+| R-V03 | > 3 ATM withdrawals in 1h | +20 |
+| R-V04 | Cross-border velocity: > 3 in 24h to different countries | +30 |
+| R-V05 | Device used by > 3 customers in 24h | +25 |
+
+---
+
+## Africa-specific rules (examples)
+
+| Rule ID | Trigger | Risk weight |
+|---|---|---|
+| R-AF01 | MoMo transfer to inactive account (0 txns in 30 days) | +15 |
+| R-AF02 | Agent cash-out above agent typical limit | +20 |
+| R-AF03 | Cross-border transfer to a non-ECOWAS country | +15 |
+| R-AF04 | Wallet-to-wallet after large cash deposit (layering signal) | +20 |
+
+---
+
+## Alert on rule trigger
+
+When rules fire and the composite score crosses the FLAG threshold (≥ 90), an alert is created:
+
+```json
+{
+  "alert_id": "ALT-001234",
+  "transaction_id": "TXN-A1B2C3",
+  "triggered_rules": ["R-V01", "R-A05"],
+  "combined_risk_score": 112,
+  "decision": "FLAG",
+  "priority": "IMMEDIATE"
+}
+```
