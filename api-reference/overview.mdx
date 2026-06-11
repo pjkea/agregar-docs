@@ -1,0 +1,62 @@
+---
+title: API Reference
+description: "Full endpoint reference — explore and try every endpoint live"
+---
+
+The full interactive API reference is auto-generated from the live OpenAPI specification.
+
+<Card title="Open API Explorer" icon="rectangle-terminal" href="https://monitor.agregartech.com/docs">
+  Browse every endpoint, see request/response schemas, and try calls directly in the browser
+</Card>
+
+---
+
+## OpenAPI spec
+
+The raw OpenAPI 3.x spec is available at:
+
+```
+https://monitor.agregartech.com/openapi.json
+```
+
+Use this to generate client SDKs, import into Postman, or integrate with any OpenAPI-compatible tooling.
+
+---
+
+## Endpoint groups
+
+| Group | Base path | What it does |
+|---|---|---|
+| **Health** | `/health` | Service status (unauthenticated) |
+| **Auth** | `/auth` | Login, token refresh |
+| **Ingestion** | `/ingestion` | Submit transactions (single, batch, validate) |
+| **Transactions** | `/transactions` | Query transaction history and detail |
+| **Alerts** | `/alerts` | List, view, resolve, and annotate AML alerts |
+| **Cases** | `/cases` | Investigation case lifecycle management |
+| **STR Reports** | `/str-reports` | Suspicious Transaction Report drafts and filings |
+| **CTR Reports** | `/ctr-reports` | Currency Transaction Report drafts and filings |
+| **Filings** | `/filings` | Immutable filed snapshots + goAML XML (regulator access) |
+| **Customers** | `/customers` | Customer profiles and risk scores |
+| **Rules** | `/rules` | AML detection rule management |
+| **Approvals** | `/approvals` | Four-eyes approval queue |
+| **Sanctions** | `/sanctions` | Sanctions screening status and management |
+| **Watchlists** | `/watchlists` | PEP and custom watchlist management |
+| **Institutions** | `/institutions` | Institution lifecycle (platform admin) |
+| **Users** | `/users` | User management and team invitations |
+| **API Keys** | `/api-keys` | Institution API key management |
+| **Audit Trail** | `/audit-trail` | Full decision and action audit log |
+| **Analytics** | `/analytics` | Risk reports, geo heatmaps, clustering |
+| **Webhooks** | `/webhooks` | Inbound webhook receiver and outbound test |
+| **USSD** | `/ussd` | Synchronous sanctions-gated fast-path (<2s) |
+| **Verification** | `/verification` | Step-up verification for medium-risk transactions |
+| **NDPA** | `/ndpa` | Data subject access and erasure requests |
+
+---
+
+## Authentication in the explorer
+
+Click **Authorize** in the API explorer and enter either:
+- Your API key in the `X-API-Key` field, or
+- A Bearer token (get one from `POST /auth/login`)
+
+All try-it calls go directly to the production API. Use the sandbox environment for testing.

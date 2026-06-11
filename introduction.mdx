@@ -1,0 +1,66 @@
+---
+title: Introduction
+description: "Real-time AML/CFT transaction monitoring for African mobile-money flows"
+---
+
+## What is Agregar Transaction Monitor?
+
+The Agregar Transaction Monitor is a compliance API that detects suspicious activity in mobile-money and banking transactions in real time. Send a transaction in, get back a risk decision — and receive alerts, cases, and regulatory filings automatically.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Authenticate and send your first transaction in 10 minutes
+  </Card>
+  <Card title="API Reference" icon="rectangle-terminal" href="/api-reference/overview">
+    Full endpoint reference auto-generated from the live OpenAPI spec
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/guides/webhooks">
+    Receive real-time push events for alerts, cases, and filings
+  </Card>
+  <Card title="Error Reference" icon="circle-exclamation" href="/guides/errors">
+    Every error code with cause and fix
+  </Card>
+</CardGroup>
+
+---
+
+## How it works
+
+```
+Your system → POST /ingestion/transaction
+                     ↓
+          Anomaly detection (15 rules + 103 ezrules)
+                     ↓
+          Risk scoring (0–300, three layers)
+                     ↓
+          Decision engine → ALLOW / FLAG / HOLD / BLOCK
+                     ↓
+          Alert created if threshold exceeded
+                     ↓
+          Case management → STR/CTR filing → goAML XML
+```
+
+---
+
+## Key capabilities
+
+| Capability | Detail |
+|---|---|
+| **Ingestion** | REST (single + batch), Kafka, USSD fast-path (<2s) |
+| **Detection** | 15 anomaly rules + 103 ezrules-style engine with shadow deployment |
+| **ML scoring** | Ensemble of XGBoost, CatBoost, LightGBM, River (online learning) |
+| **Risk decision** | ALLOW / FLAG / STEP_UP / HOLD / BLOCK with PEP and FATF overrides |
+| **Case management** | Alerts → Cases → STR/CTR drafts → goAML XML with four-eyes approval |
+| **Sanctions screening** | OFAC, UN, EU + OpenSanctions; fuzzy name matching |
+| **Jurisdictions** | Ghana (primary), Nigeria, Kenya |
+| **Auth** | JWT + API key dual auth, RBAC, full audit trail |
+
+---
+
+## Base URL
+
+```
+https://monitor.agregartech.com/api/v1
+```
+
+All endpoints require authentication except `GET /health`.

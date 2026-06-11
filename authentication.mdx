@@ -1,0 +1,106 @@
+---
+title: Authentication
+description: "API key and JWT authentication — when to use each"
+---
+
+Every endpoint except `GET /health` requires authentication. The API accepts two methods — use whichever fits your use case.
+
+---
+
+## API key (recommended for server-to-server)
+
+Pass the raw key in the `X-API-Key` header on every request:
+
+```bash
+curl https://monitor.agregartech.com/api/v1/transactions \
+  -H "X-API-Key: your_api_key_here"
+```
+
+API keys are provisioned per institution by Agregar admins, or by your institution's CLIENT_ADMIN via the dashboard (`Settings → API Keys`). Keys do not expire unless rotated or revoked.
+
+<Warning>
+  Never expose API keys in client-side code or public repositories. They carry full institution-scoped access.
+</Warning>
+
+---
+
+## JWT (for user sessions)
+
+Use when building a user-facing dashboard or any integration that authenticates on behalf of a human user.
+
+### Log in
+
+<Warning>
+  Login uses `application/x-www-form-urlencoded`, **not** JSON. Using `Content-Type: application/json` returns a 422.
+</Warning>
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/auth/login \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=you@example.com&password=yourpassword"
+```
+
+**Response:**
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer",
+  "expires_in": 3600
+}
+```
+
+### Use the token
+
+```bash
+curl https://monitor.agregartech.com/api/v1/alerts \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+Tokens expire after **1 hour**. When you receive a `401 Could not validate credentials`, log in again to get a fresh token.
+
+---
+
+## Choosing between the two
+
+| Scenario | Use |
+|---|---|
+| Core banking system pushing transactions | API key |
+| Nightly batch job | API key |
+| User dashboard (browser) | JWT |
+| Mobile app acting on behalf of a user | JWT |
+| Service-to-service (no user) | API key |
+
+You never need both in the same request. If both headers are present, the API key takes precedence.
+
+---
+
+## Roles and permissions
+
+Every authenticated caller has a role that determines what they can do. Key roles:
+
+| Role | Who it's for | What they can do |
+|---|---|---|
+| `CLIENT_ADMIN` | Institution administrator | Manage users, API keys, all AML workflows |
+| `COMPLIANCE_OFFICER` | Compliance team | File STRs, manage cases, configure thresholds |
+| `SENIOR_ANALYST` | Lead analyst | View and assign all cases, file STRs |
+| `ANALYST` | AML analyst | View assigned cases and the unassigned queue |
+| `REGULATOR_VIEWER` | Regulatory body | Read-only access to filed STR/CTR reports |
+| `AGREGAR_ADMIN` | Agregar platform team | Full access across all institutions |
+
+A `403 Permission denied` means your role does not include the required permission for that endpoint. Contact your institution admin to adjust your role.
+
+---
+
+## API key management
+
+Institution admins can manage keys at:
+
+```
+GET    /api/v1/api-keys          — list all keys for the institution
+POST   /api/v1/api-keys          — create a new key
+DELETE /api/v1/api-keys/{id}     — revoke a key
+POST   /api/v1/api-keys/{id}/rotate — rotate to a new secret
+```
+
+A new key's raw value is only returned once at creation time. Store it securely immediately.

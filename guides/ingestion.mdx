@@ -1,0 +1,173 @@
+---
+title: Ingestion Guide
+description: "Send transactions via REST, batch, or file drop"
+---
+
+## Overview
+
+The ingestion API is the entry point for all transactions. Every submitted transaction passes through the full AML pipeline: validation → deduplication → anomaly detection → risk scoring → decision → alert (if triggered).
+
+| Method | Endpoint | Best for |
+|---|---|---|
+| REST single | `POST /ingestion/transaction` | Real-time core banking hooks |
+| REST batch | `POST /ingestion/batch` | Bulk imports up to 1,000 rows |
+| Validate only | `POST /ingestion/validate` | Testing payload shape without saving |
+
+---
+
+## Single transaction
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/ingestion/transaction \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your_api_key_here" \
+  -d '{
+    "customer_id": "CUST001",
+    "timestamp": "2026-06-11T09:30:00Z",
+    "amount": 5000.00,
+    "transaction_type": "Transfer",
+    "channel": "Momo",
+    "receiver_id": "CUST002",
+    "receiver_country": "GH"
+  }'
+```
+
+**Response (201 Created):**
+
+```json
+{
+  "success": true,
+  "transaction_id": "TXN-A1B2C3D4E5F6",
+  "message": "Transaction ingested successfully",
+  "queued_for_processing": true,
+  "is_duplicate": false
+}
+```
+
+If you submit the same `transaction_id` twice, the response is `200` with `is_duplicate: true`. This is intentional — ingestion is idempotent.
+
+<Note>
+  Add `?process_immediately=true` to run the AML pipeline synchronously and get the result in the same response. Use this for testing only — it adds 200–800ms latency and is not suitable for production throughput.
+</Note>
+
+---
+
+## Batch
+
+Send up to 1,000 transactions in a single call:
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/ingestion/batch \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your_api_key_here" \
+  -d '{
+    "source_system": "core_banking",
+    "transactions": [
+      {
+        "customer_id": "CUST001",
+        "timestamp": "2026-06-11T09:00:00Z",
+        "amount": 1000.00,
+        "transaction_type": "Deposit",
+        "channel": "Bank"
+      },
+      {
+        "customer_id": "CUST002",
+        "timestamp": "2026-06-11T09:05:00Z",
+        "amount": 250.00,
+        "transaction_type": "Withdrawal",
+        "channel": "ATM"
+      }
+    ]
+  }'
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "total_submitted": 2,
+  "successful": 2,
+  "failed": 0,
+  "failed_items": [],
+  "batch_id": "BATCH-A1B2C3D4E5F6",
+  "message": "Batch processed: 2/2 successful"
+}
+```
+
+If some rows fail, the status is `207 Multi-Status`. Successful rows are still saved. Check `failed_items` for each failure:
+
+```json
+{
+  "failed_items": [
+    {
+      "index": 1,
+      "errors": ["amount has more than 2 decimal places: 250.999"]
+    }
+  ]
+}
+```
+
+---
+
+## Validate (dry-run)
+
+Check your payload without writing anything to the database:
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/ingestion/validate \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your_api_key_here" \
+  -d '{ ... }'
+```
+
+Returns the same validation errors as the live endpoint but makes no writes. Use this during development.
+
+---
+
+## Field reference
+
+### Required fields
+
+| Field | Type | Constraints |
+|---|---|---|
+| `customer_id` | string | 3–50 chars: letters, digits, `-`, `_` only |
+| `timestamp` | ISO 8601 datetime | Not in the future; not older than 90 days |
+| `amount` | decimal | Positive; max 2 decimal places; max 10,000,000 |
+| `transaction_type` | enum | `Deposit`, `Transfer`, `Withdrawal` |
+| `channel` | enum | `ATM`, `Bank`, `Card`, `Momo`, `Agent` |
+
+### Optional fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `transaction_id` | string | Auto-generated as `TXN-{UUID}` if omitted |
+| `flow_type` | enum | `Cash_In`, `Cash_Out`, `Wallet-Account`, `Account-Wallet` |
+| `receiver_id` | string | Recommended for Transfer and Withdrawal |
+| `receiver_country` | string | ISO 3166-1 alpha-2 (e.g. `GH`, `NG`, `KE`) |
+| `device_id` | string | Mobile or ATM device identifier |
+| `geo_location` | string | `"lat,long"` or JSON object |
+| `metadata` | object | Arbitrary pass-through fields, stored as-is |
+
+### Auto-creating customers
+
+If the `customer_id` has not been seen before, the system creates a customer record automatically. Optionally include these fields to enrich the profile:
+
+| Field | Type |
+|---|---|
+| `customer_type` | `Individual` (default) or `Business` |
+| `customer_country` | ISO 2-letter country code |
+| `customer_occupation` | free text |
+| `declared_monthly_income` | decimal |
+
+---
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|---|---|---|
+| `timestamp is in the future` | Client clock drift | Sync via NTP; up to 5-min skew is allowed |
+| `transaction_type 'X' is invalid` | Wrong casing | Use `Deposit`, `Transfer`, `Withdrawal` exactly |
+| `channel 'Online' is invalid` | Invalid value | Valid: `ATM`, `Bank`, `Card`, `Momo`, `Agent` |
+| `customer_id is invalid` | Special characters | Only alphanumeric, `-`, `_` allowed |
+| `queued_for_processing: false` | Celery worker down | Contact Agregar support |
+| Batch returns `207` | Some rows failed | Check `failed_items[].errors` |

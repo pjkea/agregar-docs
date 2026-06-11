@@ -1,0 +1,144 @@
+---
+title: Quickstart
+description: "Get from zero to your first AML result in 10 minutes"
+---
+
+## Prerequisites
+
+- An Agregar institution account and API key — contact [support@agregartech.com](mailto:support@agregartech.com) to provision
+- Any HTTP client — cURL, Postman, or your language's HTTP library
+
+---
+
+## Steps
+
+<Steps>
+  <Step title="Verify the API is reachable">
+    No authentication needed for the health endpoint.
+
+    ```bash
+    curl https://monitor.agregartech.com/api/v1/health
+    ```
+
+    ```json
+    { "status": "healthy", "timestamp": "2026-06-11T08:00:00Z" }
+    ```
+  </Step>
+
+  <Step title="Authenticate">
+    Include your API key in every request header:
+
+    ```bash
+    curl https://monitor.agregartech.com/api/v1/transactions \
+      -H "X-API-Key: your_api_key_here"
+    ```
+
+    <Note>
+      For user sessions, log in with **form data** (not JSON) to get a JWT. See the [Authentication guide](/authentication) for details.
+    </Note>
+  </Step>
+
+  <Step title="Send your first transaction">
+    ```bash
+    curl -X POST https://monitor.agregartech.com/api/v1/ingestion/transaction \
+      -H "Content-Type: application/json" \
+      -H "X-API-Key: your_api_key_here" \
+      -d '{
+        "customer_id": "CUST001",
+        "timestamp": "2026-06-11T09:30:00Z",
+        "amount": 5000.00,
+        "transaction_type": "Transfer",
+        "channel": "Momo",
+        "receiver_id": "CUST002",
+        "receiver_country": "GH"
+      }'
+    ```
+
+    **Response (201 Created):**
+
+    ```json
+    {
+      "success": true,
+      "transaction_id": "TXN-A1B2C3D4E5F6",
+      "queued_for_processing": true,
+      "is_duplicate": false
+    }
+    ```
+
+    The transaction is queued for the full AML pipeline — anomaly detection → risk scoring → decision — and completes within seconds.
+  </Step>
+
+  <Step title="Check for alerts">
+    If the transaction triggers a rule, an alert is created automatically. Poll for it:
+
+    ```bash
+    curl "https://monitor.agregartech.com/api/v1/alerts?transaction_id=TXN-A1B2C3D4E5F6" \
+      -H "X-API-Key: your_api_key_here"
+    ```
+
+    Or set up a [webhook](/guides/webhooks) to receive alerts in real time without polling.
+  </Step>
+</Steps>
+
+---
+
+## Test without saving
+
+Validate your payload shape without writing anything to the database:
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/ingestion/validate \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your_api_key_here" \
+  -d '{
+    "customer_id": "CUST001",
+    "timestamp": "2026-06-11T09:30:00Z",
+    "amount": -50.00,
+    "transaction_type": "Transfer",
+    "channel": "Momo"
+  }'
+```
+
+Use this to iron out payload issues before going live.
+
+---
+
+## Batch ingestion
+
+Send up to 1,000 transactions in a single call:
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/ingestion/batch \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your_api_key_here" \
+  -d '{
+    "source_system": "core_banking",
+    "transactions": [
+      {
+        "customer_id": "CUST001",
+        "timestamp": "2026-06-11T09:00:00Z",
+        "amount": 1000.00,
+        "transaction_type": "Deposit",
+        "channel": "Bank"
+      }
+    ]
+  }'
+```
+
+If some rows fail, the response is `207 Multi-Status` — successful rows are still saved and the `failed_items` array shows what went wrong per row.
+
+---
+
+## Next steps
+
+<CardGroup cols={3}>
+  <Card title="Authentication" icon="key" href="/authentication">
+    API keys vs JWT, token refresh, scopes
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/guides/webhooks">
+    Receive real-time push events
+  </Card>
+  <Card title="Errors" icon="circle-exclamation" href="/guides/errors">
+    Every error code explained
+  </Card>
+</CardGroup>

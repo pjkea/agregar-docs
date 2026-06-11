@@ -1,0 +1,248 @@
+---
+title: Error Reference
+description: "Every error code with cause and fix"
+---
+
+All errors follow a consistent JSON envelope:
+
+```json
+{
+  "error": {
+    "message": "Human-readable description of what went wrong",
+    "category": "validation",
+    "request_id": "550e8400-e29b-41d4-a716-446655440000",
+    "details": {}
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `message` | Plain-English explanation. Log this; do not surface directly to end users. |
+| `category` | Machine-readable error category |
+| `request_id` | UUID for this request — include in every support ticket |
+| `details` | Optional structured context, present on validation errors |
+
+<Note>
+  FastAPI input validation errors (malformed JSON, missing required fields) use a slightly different shape with a `detail` array instead of an `error` object. The field-level `loc` tells you exactly which field failed.
+</Note>
+
+```json
+{
+  "detail": [
+    {
+      "loc": ["body", "amount"],
+      "msg": "field required",
+      "type": "value_error.missing"
+    }
+  ]
+}
+```
+
+---
+
+## HTTP status codes
+
+| Status | Category | Meaning |
+|---|---|---|
+| `200` | — | Success |
+| `201` | — | Resource created |
+| `202` | — | Accepted (async — webhook received, transaction queued) |
+| `207` | — | Multi-Status (batch with partial failures) |
+| `400` | `validation` | Bad request — invalid field values |
+| `401` | `authentication` | Missing or invalid credentials |
+| `403` | `authentication` | Valid credentials but insufficient permissions |
+| `404` | `not_found` | Resource does not exist or is not visible to your institution |
+| `409` | `business_logic` | Conflict — duplicate action or state machine violation |
+| `422` | `business_logic` | Business rule violation |
+| `429` | — | Rate limit exceeded |
+| `500` | `system` | Unexpected internal error |
+| `502` | `external` | Upstream dependency failure |
+| `503` | `external` | Service temporarily unavailable |
+
+---
+
+## Error categories
+
+| Category | What it means | What to do |
+|---|---|---|
+| `validation` | A field value is missing, wrong type, or out of range | Fix the payload per `details` |
+| `business_logic` | Structurally valid but violates a rule | Read `message` — e.g. you cannot resolve an already-closed alert |
+| `not_found` | Resource doesn't exist or belongs to a different institution | Verify the ID |
+| `authentication` | Bad or missing credentials | Check your API key or re-authenticate |
+| `system` | Bug or infrastructure failure | Retry with back-off; escalate if persistent |
+| `external` | A third-party dependency failed | Retry after a short delay |
+| `database` | Database operation failed | Same as `system` |
+
+---
+
+## 400 — Validation errors
+
+<AccordionGroup>
+
+<Accordion title="amount has more than 2 decimal places">
+  Round to 2 decimal places before sending. `5000.999` → `5001.00`
+</Accordion>
+
+<Accordion title="transaction_type 'X' is invalid">
+  The enum is case-sensitive. Valid values: `Deposit`, `Transfer`, `Withdrawal`
+</Accordion>
+
+<Accordion title="channel 'Online' is invalid">
+  Valid values: `ATM`, `Bank`, `Card`, `Momo`, `Agent`
+</Accordion>
+
+<Accordion title="customer_id is invalid">
+  Only letters, digits, hyphens, and underscores allowed. No spaces or special characters. Length 3–50.
+</Accordion>
+
+<Accordion title="timestamp is in the future">
+  The transaction timestamp must not be more than 5 minutes ahead of server time. Sync your clock via NTP.
+</Accordion>
+
+<Accordion title="timestamp is too old">
+  The ingestion window is 90 days. Transactions older than that are rejected.
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## 401 — Authentication
+
+<AccordionGroup>
+
+<Accordion title="X-Webhook-Signature header required">
+  Your inbound webhook request is missing the signature header. Add `X-Webhook-Signature: sha256=<hmac>`. See the [Webhooks guide](/guides/webhooks#signature-verification) for how to compute it.
+</Accordion>
+
+<Accordion title="Invalid webhook signature">
+  The HMAC does not match. Ensure you are signing the **raw request body bytes**, not a re-serialised JSON string. Whitespace differences will cause a mismatch.
+</Accordion>
+
+<Accordion title="Could not validate credentials">
+  Your JWT has expired (tokens last 1 hour) or is malformed. Re-authenticate via `POST /auth/login`.
+</Accordion>
+
+<Accordion title="Invalid API key">
+  The `X-API-Key` value is wrong or the key has been revoked. Check the key in your dashboard or contact your institution admin.
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## 403 — Permission denied
+
+<AccordionGroup>
+
+<Accordion title="Permission denied — PERMISSION_NAME required">
+  Your role does not include the required permission. Contact your institution admin to adjust your role. See the [Authentication guide](/authentication#roles-and-permissions) for what each role can do.
+</Accordion>
+
+<Accordion title="API key must belong to a REGULATOR institution to access filings">
+  The `/filings` endpoints are restricted to REGULATOR institution API keys and platform admins.
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## 404 — Not found
+
+Returned when:
+- The resource ID does not exist
+- The resource belongs to a different institution — Row-Level Security makes foreign records invisible rather than returning a 403
+
+**Debugging tip:** Confirm the resource was created in the correct institution context. A transaction ingested with API key A will not be visible when authenticated with API key B, even if both belong to the same company.
+
+---
+
+## 409 — Conflict
+
+<AccordionGroup>
+
+<Accordion title="goAML XML was not captured for this filing">
+  The filing snapshot exists but was created before goAML capture was introduced, or XML generation failed at filing time. Structured JSON data is still available via `GET /filings/{id}` — only the XML attachment is missing.
+</Accordion>
+
+<Accordion title="Alert already resolved">
+  You tried to resolve an alert that is not in `OPEN` status.
+</Accordion>
+
+<Accordion title="Case is already closed">
+  An action was attempted on a closed case. Re-open it first if needed.
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## 422 — Business logic
+
+<AccordionGroup>
+
+<Accordion title="Four-eyes approval required">
+  This action requires a second approver. The request has been saved as a pending approval — a different user with the `approve_action` permission must confirm it at `POST /approvals/{id}/approve`.
+</Accordion>
+
+<Accordion title="Cannot approve your own request">
+  The four-eyes rule prevents the same user from both requesting and approving a sensitive action.
+</Accordion>
+
+<Accordion title="Sanctions match: HOLD">
+  The transaction counterparty or customer matched a sanctions or PEP list entry above the review threshold. The transaction is held pending manual review.
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## 429 — Rate limited
+
+Default limits per API key:
+
+| Endpoint | Limit |
+|---|---|
+| `POST /ingestion/transaction` | 100 req/s |
+| `POST /ingestion/batch` | 10 req/s |
+| All read endpoints | 50 req/s |
+
+Back off for the duration in the `Retry-After` response header (in seconds).
+
+---
+
+## 500 — Internal server error
+
+An unexpected error occurred. The `request_id` in the response uniquely identifies the request in server logs — always include it when contacting support.
+
+Retry strategy: exponential back-off starting at 1s, max 4 attempts.
+
+---
+
+## 502 / 503 — Upstream failure
+
+The API degrades gracefully when internal services are unavailable:
+
+| Dependency | Behaviour when unavailable |
+|---|---|
+| Kafka | Transactions are saved; AML scoring falls back to synchronous |
+| Redis / Celery | Background tasks queue locally and catch up on recovery |
+| Sanctions screening | Ingestion proceeds; result marked `UNAVAILABLE` |
+| ML scoring | Rule-based scoring continues; ML score is omitted |
+
+Retry after 5–10 seconds. If the error persists beyond 2 minutes, contact support with the `request_id`.
+
+---
+
+## Getting support
+
+Include the following in every support request:
+
+1. The `request_id` from the error response
+2. HTTP method and path (e.g. `POST /api/v1/ingestion/transaction`)
+3. Request body (redact any PII)
+4. Full error response body
+5. Approximate timestamp (UTC)
+
+Email: [support@agregartech.com](mailto:support@agregartech.com)
