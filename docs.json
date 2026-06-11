@@ -1,0 +1,82 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Agregar Transaction Monitor",
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "favicon": "/favicon.svg",
+  "colors": {
+    "primary": "#0D9373",
+    "light": "#07C983",
+    "dark": "#0D9373"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Support",
+        "href": "mailto:support@agregartech.com"
+      }
+    ],
+    "primary": {
+      "label": "Dashboard",
+      "href": "https://transaction-monitor-dashboard.netlify.app"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "authentication"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/ingestion",
+              "guides/webhooks",
+              "guides/errors"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "API Reference",
+            "pages": [
+              "api-reference/overview"
+            ]
+          }
+        ]
+      }
+    ],
+    "global": {
+      "anchors": [
+        {
+          "anchor": "API Explorer",
+          "icon": "rectangle-terminal",
+          "href": "https://monitor.agregartech.com/docs"
+        },
+        {
+          "anchor": "Status",
+          "icon": "signal",
+          "href": "https://monitor.agregartech.com/api/v1/health"
+        }
+      ]
+    }
+  },
+  "footer": {
+    "socials": {
+      "website": "https://agregartech.com"
+    }
+  }
+}
