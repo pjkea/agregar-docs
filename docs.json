@@ -20,6 +20,7 @@
       }
     ],
     "primary": {
+      "type": "button",
       "label": "Dashboard",
       "href": "https://transaction-monitor-dashboard.netlify.app"
     }
