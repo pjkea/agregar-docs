@@ -65,7 +65,7 @@ The drift monitor runs daily and compares the current transaction distribution a
 | Test | What it measures |
 |---|---|
 | **KS test** (Kolmogorov-Smirnov) | Distribution shift in individual features |
-| **PSI** (Population Stability Index) | Overall population drift: <0.1 stable, 0.1–0.25 monitor, >0.25 retrain |
+| **PSI** (Population Stability Index) | Overall population drift: &lt;0.1 stable, 0.1–0.25 monitor, &gt;0.25 retrain |
 
 If PSI > 0.25 on amount or velocity features, the weekly retrain is triggered immediately.
 
