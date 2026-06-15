@@ -1,106 +1,152 @@
 ---
 title: Webhooks
-description: "Receive real-time push events for alerts, cases, and regulatory filings"
+description: "Register per-tenant endpoints and receive real-time push events for transaction decisions, alerts, cases, and regulatory filings"
 ---
 
-The Transaction Monitor can push events to your system so you don't have to poll. There are two directions:
-
-- **Outbound** — the system POSTs events to a URL you configure
-- **Inbound** — your system POSTs events to the Transaction Monitor
+The Transaction Monitor pushes events to your registered HTTPS endpoint as they happen. Each institution registers its own URL — no shared global config, no polling.
 
 ---
 
-## Outbound webhooks
+## How it works
 
-### Configuration
+1. You register an endpoint URL via `POST /webhooks/endpoints`
+2. We return a **signing secret** — store it securely, it's shown once
+3. We POST a signed JSON envelope to your URL as events occur
+4. You verify the signature, return 2xx within 10 seconds, process async
+5. Failed deliveries retry 4 times with exponential back-off (30 s → 5 m → 30 m → 2 h)
 
-Ask Agregar to set these environment variables on your instance:
+---
 
-| Variable | What it receives |
-|---|---|
-| `ALERT_WEBHOOK_URL` | Alert notifications and case lifecycle events |
-| `REPORT_WEBHOOK_URL` | STR and CTR filing events (falls back to `ALERT_WEBHOOK_URL`) |
-
-Both accept any HTTPS URL. The system POSTs `application/json` with a 10-second timeout. Failed deliveries are logged but not retried automatically — see [Delivery guarantees](#delivery-guarantees) below.
-
-### Test your endpoint
-
-Fire a dummy event before going live:
+## Register an endpoint
 
 ```bash
-curl -X POST https://monitor.agregartech.com/api/v1/webhooks/test \
+curl -X POST https://monitor.agregartech.com/api/v1/webhooks/endpoints \
+  -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your_api_key_here" \
   -d '{
-    "event_type": "TEST",
-    "payload": { "hello": "world" },
-    "webhook_url": "https://your-system.example.com/webhooks/tms"
+    "url": "https://your-system.example.com/webhooks/tms",
+    "events": ["TRANSACTION_SCORED", "ALERT_GENERATED", "STR_FILED"],
+    "description": "Fidelity core banking integration"
   }'
 ```
 
+**Response (201 Created):**
+
+```json
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "url": "https://your-system.example.com/webhooks/tms",
+  "events": ["TRANSACTION_SCORED", "ALERT_GENERATED", "STR_FILED"],
+  "is_active": true,
+  "description": "Fidelity core banking integration",
+  "created_at": "2026-06-15T10:00:00Z",
+  "secret": "a3f8c2d1e4b7..."
+}
+```
+
+<Warning>
+  The `secret` is returned **only at registration time**. Store it immediately in your secrets manager. To rotate it, delete the endpoint and re-register.
+</Warning>
+
+### Available event types
+
+| Event | Fires when |
+|---|---|
+| `TRANSACTION_SCORED` | Every transaction finishes the full AML pipeline |
+| `ALERT_GENERATED` | A high-priority (P1/Immediate) alert is created |
+| `CASE_CREATED` | A case is opened from an alert |
+| `CASE_ESCALATED` | A case is escalated |
+| `SLA_BREACH` | A case exceeds its SLA threshold |
+| `STR_FILED` | A Suspicious Transaction Report is filed |
+| `CTR_FILED` | A Currency Transaction Report is filed |
+
+Subscribe to only the events you need. You can update subscriptions at any time with `PATCH /webhooks/endpoints/{id}`.
+
 ---
 
-## Outbound events
+## Event envelope
+
+Every event uses the same outer shape:
+
+```json
+{
+  "id": "evt_a1b2c3d4e5f6...",
+  "event_type": "TRANSACTION_SCORED",
+  "api_version": "2026-06-15",
+  "created_at": "2026-06-15T10:30:00.123456Z",
+  "livemode": true,
+  "data": { ... }
+}
+```
+
+Check `event_type` first; the structure of `data` depends on it.
+
+---
+
+## Event payloads
+
+### `TRANSACTION_SCORED`
+
+Fires on every transaction that completes scoring — including `ALLOW` decisions. This is the event to listen to for your retry / result-retrieval flow.
+
+```json
+{
+  "id": "evt_...",
+  "event_type": "TRANSACTION_SCORED",
+  "api_version": "2026-06-15",
+  "created_at": "2026-06-15T10:30:00Z",
+  "livemode": true,
+  "data": {
+    "transaction_id": "TXN-20260615-001",
+    "customer_id": "CUST-001",
+    "amount": 500.00,
+    "transaction_type": "Transfer",
+    "channel": "Momo",
+    "combined_risk_score": 185,
+    "decision": "FLAG",
+    "flagged": true,
+    "alert_generated": true,
+    "alert_priority": "IMMEDIATE",
+    "alert_id": "ALT-20260615-042",
+    "triggered_rules": ["VEL_007", "HIGH_RISK_COUNTRY_001"],
+    "ml_score": 0.82,
+    "sanctions_result": "CLEAR"
+  }
+}
+```
+
+`decision` is one of `ALLOW`, `FLAG`, `HOLD`, `BLOCK`, or `STEP_UP`.
+
+---
 
 ### `ALERT_GENERATED`
 
-Fires when a high-priority (P1 / Immediate) alert is created. Delivered within 15 minutes.
-
-**Destination:** `ALERT_WEBHOOK_URL`
-
 ```json
 {
-  "text": ":rotating_light: *IMMEDIATE ALERT* – Alert `ALT-XXXX` (score: 185)\nCustomer: `CUST001` | Transaction: `TXN-XXXX`\nRules: High Value Transfer, Velocity Spike"
+  "data": {
+    "alert_id": "ALT-20260615-042",
+    "transaction_id": "TXN-20260615-001",
+    "customer_id": "CUST-001",
+    "priority": "IMMEDIATE",
+    "risk_score": 185,
+    "triggered_rules": ["VEL_007", "HIGH_RISK_COUNTRY_001"],
+    "status": "OPEN",
+    "alert_url": "/api/v1/alerts/ALT-20260615-042"
+  }
 }
-```
-
-<Note>
-  This uses a Slack-compatible `text` field so it can be delivered directly to Slack or Microsoft Teams. To consume it in a custom system, parse the alert ID from `text` and call `GET /alerts/{id}` for structured data.
-</Note>
-
----
-
-### `STR_FILED`
-
-Fires when a Suspicious Transaction Report is filed to the regulator.
-
-**Destination:** `REPORT_WEBHOOK_URL`
-
-```json
-{
-  "event_type": "STR_FILED",
-  "report_type": "STR",
-  "report_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "filed_at": "2026-06-11T10:30:00Z",
-  "case_id": "CASE-0042",
-  "jurisdiction_id": "550e8400-e29b-41d4-a716-446655440000",
-  "filed_by": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
-  "filing_reference": "STR-GHA-2026-00042"
-}
-```
-
-After receiving this event, fetch the full filing:
-```
-GET /api/v1/filings/{report_id}
-GET /api/v1/filings/{report_id}/goaml    ← goAML XML attachment
 ```
 
 ---
 
-### `CTR_FILED`
-
-Fires when a Currency Transaction Report is automatically filed (daily task).
-
-**Destination:** `REPORT_WEBHOOK_URL`
+### `CASE_CREATED` / `CASE_ESCALATED`
 
 ```json
 {
-  "event_type": "CTR_FILED",
-  "report_type": "CTR",
-  "report_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "filed_at": "2026-06-11T00:15:00Z",
-  "jurisdiction_id": "550e8400-e29b-41d4-a716-446655440000",
-  "filing_reference": "CTR-GHA-2026-00107"
+  "data": {
+    "case_id": "CASE-0042",
+    "case_status": "ESCALATED",
+    "alert_id": "ALT-20260615-042"
+  }
 }
 ```
 
@@ -108,104 +154,206 @@ Fires when a Currency Transaction Report is automatically filed (daily task).
 
 ### `SLA_BREACH`
 
-Fires when a case exceeds its SLA threshold and is escalated automatically.
-
-**Destination:** `ALERT_WEBHOOK_URL`
-
 ```json
 {
-  "event_type": "SLA_BREACH",
-  "case_id": "CASE-0042",
-  "case_status": "OPEN",
-  "hours_overdue": 6.5,
-  "from_status": "OPEN"
+  "data": {
+    "case_id": "CASE-0042",
+    "case_status": "OPEN",
+    "hours_overdue": 6.5
+  }
 }
 ```
 
 ---
 
-### `CASE_ESCALATED`
-
-Fires when a case status is escalated.
-
-**Destination:** `ALERT_WEBHOOK_URL`
+### `STR_FILED`
 
 ```json
 {
-  "event_type": "CASE_ESCALATED",
-  "case_id": "CASE-0042",
-  "case_status": "ESCALATED"
+  "data": {
+    "report_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "report_type": "STR",
+    "case_id": "CASE-0042",
+    "jurisdiction_id": "550e8400-e29b-41d4-a716-446655440000",
+    "filed_by": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+    "filing_reference": "STR-GHA-2026-00042"
+  }
+}
+```
+
+After receiving this, fetch the full filing:
+```
+GET /api/v1/filings/{report_id}
+GET /api/v1/filings/{report_id}/goaml   ← goAML XML
+```
+
+---
+
+### `CTR_FILED`
+
+```json
+{
+  "data": {
+    "report_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "report_type": "CTR",
+    "jurisdiction_id": "550e8400-e29b-41d4-a716-446655440000",
+    "filing_reference": "CTR-GHA-2026-00107"
+  }
 }
 ```
 
 ---
 
-## Inbound webhooks
+## Verifying the signature
 
-Push events from your system to the Transaction Monitor at `POST /api/v1/webhooks/inbound`. Use this to notify the system of external events — for example, a sanctions list update from a third-party provider.
+Every delivery includes an `X-TMS-Signature` header. Verify it before processing.
 
-```bash
-curl -X POST https://monitor.agregartech.com/api/v1/webhooks/inbound \
-  -H "Content-Type: application/json" \
-  -H "X-Webhook-Signature: sha256=abc123..." \
-  -d '{
-    "event_type": "SANCTIONS_UPDATE",
-    "source": "opensanctions",
-    "updated_at": "2026-06-11T06:00:00Z"
-  }'
 ```
-
-**Response (202 Accepted):**
-
-```json
-{ "status": "accepted", "event_type": "SANCTIONS_UPDATE" }
+X-TMS-Signature: sha256=3c5e2a...
+X-TMS-Event: TRANSACTION_SCORED
+X-TMS-Delivery: evt_3fa85f64...
 ```
-
-### Signature verification
-
-If `INBOUND_WEBHOOK_SECRET` is configured, every request must include a valid `X-Webhook-Signature` header. Unsigned requests are rejected with `401`.
-
-Format: `sha256=<hex_digest>` — HMAC-SHA256 of the raw request body.
 
 <CodeGroup>
 
 ```python Python
 import hashlib, hmac
+from fastapi import Request, HTTPException
 
-secret = "your_inbound_webhook_secret"
-body = b'{"event_type":"SANCTIONS_UPDATE"}'
+async def verify_tms_webhook(request: Request, secret: str) -> dict:
+    body = await request.body()
+    sig_header = request.headers.get("X-TMS-Signature", "")
 
-digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-header = f"sha256={digest}"
+    if not sig_header.startswith("sha256="):
+        raise HTTPException(status_code=401, detail="Missing signature")
+
+    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    received = sig_header[len("sha256="):]
+
+    if not hmac.compare_digest(expected, received):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    return await request.json()
 ```
 
 ```javascript Node.js
 const crypto = require('crypto');
 
-const secret = 'your_inbound_webhook_secret';
-const body = JSON.stringify({ event_type: 'SANCTIONS_UPDATE' });
-
-const digest = crypto.createHmac('sha256', secret).update(body).digest('hex');
-const header = `sha256=${digest}`;
+function verifyTmsWebhook(body, signatureHeader, secret) {
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(body)           // raw Buffer, not parsed JSON
+    .digest('hex');
+  const received = signatureHeader.replace('sha256=', '');
+  return crypto.timingSafeEqual(
+    Buffer.from(expected),
+    Buffer.from(received)
+  );
+}
 ```
 
 </CodeGroup>
 
 <Warning>
-  Compute the HMAC over the **raw bytes** of the request body, not a re-serialised version. Whitespace differences will cause signature mismatch.
+  Compute the HMAC over the **raw request body bytes**, not a re-serialised JSON string. Any whitespace difference will cause a mismatch.
 </Warning>
 
 ---
 
 ## Delivery guarantees
 
-Outbound webhooks are best-effort: one attempt per event, 10-second timeout, no automatic retry.
+| Property | Detail |
+|---|---|
+| Timeout | 10 seconds per attempt |
+| Retry schedule | Immediate → 30 s → 5 min → 30 min → 2 h (max 5 attempts) |
+| After 5 failures | Delivery marked `failed`; no further retries |
+| Idempotency key | `id` field in the envelope (`evt_...`) — deduplicate on this |
+| Ordering | No ordering guarantee across events; use `created_at` if sequence matters |
 
-**Best practice:** Accept the webhook quickly (respond 2xx within 3 seconds) and process asynchronously. Use these REST fallbacks if your endpoint was unavailable:
+**Your endpoint should respond 2xx within 3 seconds** and process asynchronously. Any 2xx is accepted; we don't read the response body.
+
+---
+
+## Delivery log
+
+Inspect delivery history to debug failures:
+
+```bash
+GET /api/v1/webhooks/endpoints/{id}/deliveries
+```
+
+```json
+[
+  {
+    "id": "...",
+    "event_type": "TRANSACTION_SCORED",
+    "status": "delivered",
+    "attempt_count": 1,
+    "response_status": 200,
+    "created_at": "2026-06-15T10:30:00Z",
+    "last_attempt_at": "2026-06-15T10:30:01Z"
+  },
+  {
+    "id": "...",
+    "event_type": "ALERT_GENERATED",
+    "status": "pending",
+    "attempt_count": 2,
+    "response_status": 503,
+    "created_at": "2026-06-15T10:31:00Z",
+    "next_retry_at": "2026-06-15T11:01:00Z"
+  }
+]
+```
+
+---
+
+## Test your endpoint
+
+Before going live, fire a test event to your URL:
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/webhooks/test \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "TEST",
+    "webhook_url": "https://your-system.example.com/webhooks/tms",
+    "payload": { "hello": "world" }
+  }'
+```
+
+The test payload is wrapped in the standard event envelope so your signature verification runs exactly as in production.
+
+---
+
+## Managing endpoints
+
+```bash
+# List all your registered endpoints
+GET  /api/v1/webhooks/endpoints
+
+# Pause deliveries without deleting
+PATCH /api/v1/webhooks/endpoints/{id}
+{ "is_active": false }
+
+# Update subscribed events
+PATCH /api/v1/webhooks/endpoints/{id}
+{ "events": ["TRANSACTION_SCORED", "STR_FILED"] }
+
+# Delete (all pending deliveries are cancelled)
+DELETE /api/v1/webhooks/endpoints/{id}
+```
+
+---
+
+## REST fallbacks
+
+If your endpoint was unavailable and deliveries exhausted retries:
 
 | Missed event | Fallback |
 |---|---|
+| `TRANSACTION_SCORED` | `GET /transactions/{transaction_id}` |
 | `ALERT_GENERATED` | `GET /alerts?status=OPEN&priority=IMMEDIATE` |
 | `STR_FILED` | `GET /filings?report_type=STR` |
 | `CTR_FILED` | `GET /filings?report_type=CTR` |
-| `SLA_BREACH` / `CASE_ESCALATED` | `GET /cases?status=ESCALATED` |
+| `CASE_ESCALATED` / `SLA_BREACH` | `GET /cases?status=ESCALATED` |
