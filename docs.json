@@ -63,14 +63,6 @@
               "compliance/data-privacy"
             ]
           },
-          {
-            "group": "Operations",
-            "pages": [
-              "ops/deployment",
-              "ops/background-jobs",
-              "ops/runbook"
-            ]
-          }
         ]
       },
       {

@@ -54,37 +54,37 @@ New rules run in shadow mode alongside the production engine. The `ShadowCompari
 
 ## Amount rules (examples)
 
-| Rule ID | Trigger | Risk weight |
-|---|---|---|
-| R-A01 | Amount > CTR threshold (cash) | +30 |
-| R-A02 | Amount > STR threshold | +25 |
-| R-A03 | Round-number amount (ends in 000) | +10 |
-| R-A04 | Amount exactly at a common smurfing boundary | +20 |
-| R-A05 | Amount > 10× customer 30-day average | +25 |
-| R-A06 | Zero-value transaction | +5 |
+| Rule ID | Trigger |
+|---|---|
+| R-A01 | Amount exceeds the cash CTR threshold for the transaction's jurisdiction |
+| R-A02 | Amount exceeds the STR reporting threshold |
+| R-A03 | Round-number amount (ends in 000) |
+| R-A04 | Amount exactly at a common smurfing boundary |
+| R-A05 | Amount > 10× the customer's 30-day average |
+| R-A06 | Zero-value transaction |
 
 ---
 
 ## Velocity rules (examples)
 
-| Rule ID | Trigger | Risk weight |
-|---|---|---|
-| R-V01 | > 10 transactions in 1 hour for same customer | +25 |
-| R-V02 | > 5 transfers to same receiver in 24h | +20 |
-| R-V03 | > 3 ATM withdrawals in 1h | +20 |
-| R-V04 | Cross-border velocity: > 3 in 24h to different countries | +30 |
-| R-V05 | Device used by > 3 customers in 24h | +25 |
+| Rule ID | Trigger |
+|---|---|
+| R-V01 | More than 10 transactions in 1 hour for the same customer |
+| R-V02 | More than 5 transfers to the same receiver in 24 hours |
+| R-V03 | More than 3 ATM withdrawals in 1 hour |
+| R-V04 | Cross-border velocity: more than 3 transactions in 24 hours to different countries |
+| R-V05 | Device used by more than 3 distinct customers in 24 hours |
 
 ---
 
 ## Africa-specific rules (examples)
 
-| Rule ID | Trigger | Risk weight |
-|---|---|---|
-| R-AF01 | MoMo transfer to inactive account (0 txns in 30 days) | +15 |
-| R-AF02 | Agent cash-out above agent typical limit | +20 |
-| R-AF03 | Cross-border transfer to a non-ECOWAS country | +15 |
-| R-AF04 | Wallet-to-wallet after large cash deposit (layering signal) | +20 |
+| Rule ID | Trigger |
+|---|---|
+| R-AF01 | MoMo transfer to an account with no transactions in the past 30 days |
+| R-AF02 | Agent cash-out above the agent's typical transaction limit |
+| R-AF03 | Cross-border transfer to a non-ECOWAS country |
+| R-AF04 | Wallet-to-wallet transfer immediately following a large cash deposit (layering signal) |
 
 ---
 

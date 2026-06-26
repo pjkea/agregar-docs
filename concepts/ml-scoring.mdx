@@ -17,12 +17,6 @@ Every transaction receives an ML fraud probability score (0–1) from an ensembl
 
 If a model fails to load, its weight is redistributed proportionally. The `model_used` field reflects this: `"ensemble"` (all four) or `"ensemble_degraded"` (subset).
 
-Weights can be overridden via environment variables:
-- `ENSEMBLE_WEIGHT_CATBOOST` (default 0.40)
-- `ENSEMBLE_WEIGHT_LGBM` (default 0.20)
-- `ENSEMBLE_WEIGHT_RIVER` (default 0.25)
-- `ENSEMBLE_WEIGHT_XGBOOST` (default 0.15)
-
 ---
 
 ## Feature set
@@ -35,26 +29,14 @@ The ensemble uses **24 features** derived from the enriched transaction context:
 
 ---
 
-## Online learning (River ARF)
+## Continuous learning
 
-The River Adaptive Random Forest model updates immediately after every analyst decision:
+The ensemble improves automatically from analyst decisions:
 
-1. Analyst resolves an alert (True Positive) or marks it False Positive
-2. `LabelingService` calls `ensemble_orchestrator.learn(transaction, label)`
-3. River ARF updates its trees in real time
+- **River ARF** updates in real time after every alert resolution — fraud patterns are incorporated within minutes of the first confirmed case.
+- **XGBoost** retrains periodically from the accumulated pool of analyst-labelled transactions. A new version is promoted automatically if it outperforms the current champion on held-out validation.
 
-This means the model adapts to new fraud patterns within minutes of the first confirmed case.
-
----
-
-## Self-learning (XGBoost)
-
-Labels from analyst decisions and SAR filings feed the XGBoost retraining pipeline:
-
-- **Source:** Alert resolutions and Case SAR filings → `LabeledTransaction` table
-- **Gate:** Minimum 50 fraud labels + 100 legitimate labels before retraining begins
-- **Schedule:** Weekly retrain every Sunday at 05:00 UTC
-- **Promotion:** New model replaces the champion automatically if it outperforms on held-out validation
+The practical effect: the longer your team uses the system, the more accurately the models reflect your institution's specific transaction patterns.
 
 ---
 
@@ -71,17 +53,6 @@ If PSI > 0.25 on amount or velocity features, the weekly retrain is triggered im
 
 ---
 
-## Champion/challenger
-
-The model registry tracks every trained version:
-
-```
-TRAINING → CHAMPION → RETIRED
-```
-
-At any time exactly one model of each type holds `CHAMPION` status.
-
----
 
 ## ML score in the transaction response
 
