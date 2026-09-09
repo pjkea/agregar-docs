@@ -1,49 +1,46 @@
 ---
 title: "Sanctions Screening"
-description: "Real-time OFAC, UN, and EU sanctions screening with fuzzy name matching."
+description: "How sanctions, PEP, and adverse-media screening works at ingestion, and how a hit drives the decision."
 icon: "shield-halved"
 ---
 
 ## How screening works
 
-Every transaction is screened against three sanctions lists in real time before a risk score is assigned:
+At ingestion, every transaction is screened through the **Screening API** — a dedicated service (`POST /api/v1/aml/check`) that checks the customer and counterparty names against sanctions, PEP, and adverse-media sources and returns a status for each signal plus an `is_listed` flag:
 
-| List | Coverage |
+| Signal | Result |
 |---|---|
-| **OFAC SDN** | US Treasury — Specially Designated Nationals |
-| **UN Security Council** | Global consolidated sanctions list |
-| **EU Restrictive Measures** | European Union sanctions |
-| **OpenSanctions** | Aggregated open-source database (PEP + sanctions) |
+| **Sanctions** | A status per name: clear, potential match, or confirmed match |
+| **PEP** | A status per name: clear, potential match, or confirmed match |
+| **Adverse media** | Clear or hit |
 
-Screening uses **three-pass fuzzy matching** with `rapidfuzz`:
+A hit does **not** directly assign a risk score. Instead it **tightens the decision thresholds** for that transaction (see [Decision Engine](/concepts/decision-engine)): a sanctions hit applies the strictest thresholds — so the transaction typically lands on `BLOCK` — while a PEP or adverse-media hit applies stricter thresholds. Sanctions and PEP hits also open the matching case automatically.
 
-| Pass | Match score | Decision |
-|---|---|---|
-| Pass 1 — Exact / High | ≥ 95% | `BLOCK` |
-| Pass 2 — Review tier | 80–94% | `HOLD` (pending manual review) |
-| Pass 3 — Clear | < 80% | `CLEAR` |
+<Note>
+  A separate, local `rapidfuzz` three-pass matcher (MATCH ≥ 95 / REVIEW ≥ 80 / CLEAR below 80) powers **custom-watchlist** screening and the **USSD fast-path** sanctions gate. It is not the ingestion screening path described above — don't conflate the two.
+</Note>
 
 ---
 
-## Screening at ingestion
+## What the client sees
 
-Sanctions checks run synchronously at transaction ingestion. A BLOCK match rejects the transaction before any other processing:
+Screening runs synchronously during ingestion, but a hit is **not** an HTTP rejection. Ingestion still returns `201 Created` — the request itself always succeeds. The verdict comes back as data, and your core banking system enforces it:
+
+- **Synchronous** (`?process_immediately=true`, or once async processing completes) — the verdict fields are populated in the ingestion response.
+- **Asynchronous** (default) — poll `GET /api/v1/transactions/{transaction_id}` or subscribe to the `TRANSACTION_SCORED` [webhook](/guides/webhooks).
 
 ```json
 {
+  "success": true,
   "transaction_id": "TXN-X9Z3Q1",
-  "decision": "BLOCK",
-  "sanctions_result": {
-    "status": "MATCH",
-    "match_score": 97.4,
-    "matched_list": "OFAC_SDN",
-    "matched_name": "Ibrahim Al-Qahtani",
-    "entity_type": "INDIVIDUAL"
-  }
+  "combined_risk_score": 240,
+  "flagged": true,
+  "alert_id": "ALT-00123",
+  "processing_complete": true
 }
 ```
 
-HOLD matches are stored and surfaced as `PENDING_REVIEW` in the sanctions queue.
+The full decision label (`BLOCK`, `HOLD`, …) and screening detail live on the scored transaction — fetch it with `GET /api/v1/transactions/{transaction_id}`. HOLD matches also surface in the review queue below.
 
 ---
 
@@ -82,7 +79,7 @@ curl -X POST https://monitor.agregartech.com/api/v1/watchlists/screening-queue/M
 
 ## PEP screening
 
-PEP records are screened separately. A PEP match forces a minimum `HOLD` decision regardless of risk score. PEP data is sourced from OpenSanctions and can be supplemented with custom entries:
+PEP records are screened by the same Screening API. A PEP hit applies stricter (PEP) decision thresholds and opens an AML case automatically. You can supplement screening with custom PEP entries in your own watchlist:
 
 ```bash
 POST /api/v1/watchlists

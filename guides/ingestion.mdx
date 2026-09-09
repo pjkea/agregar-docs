@@ -154,10 +154,15 @@ If the `customer_id` has not been seen before, the system creates a customer rec
 
 | Field | Type |
 |---|---|
-| `customer_type` | `Individual` (default) or `Business` |
+| `customer_type` | `Individual` (default), `Merchant`, or `Company` |
+| `customer_kyc_score` | integer 0–100 — KYC completeness. The single biggest input to customer risk; supply it to avoid inflated false positives |
 | `customer_country` | ISO 2-letter country code |
 | `customer_occupation` | free text |
 | `declared_monthly_income` | decimal |
+
+<Warning>
+  `customer_type` is case-sensitive and must be one of `Individual`, `Merchant`, or `Company`. `Business` is **not** a valid value — it is silently accepted but scores incorrectly.
+</Warning>
 
 ---
 

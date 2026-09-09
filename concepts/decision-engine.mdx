@@ -12,9 +12,9 @@ The decision engine runs after risk scoring and produces the final disposition f
 composite_risk_score
         │
         ▼
-  Override checks ──── PEP match → HOLD
-  (before thresholds)  Sanctions ≥ 95% → BLOCK
-                       FATF high-risk → FLAG minimum
+  Screening overrides ─ Sanctions hit → strictest thresholds
+  (tighten, not force)  PEP hit → stricter thresholds
+                        FATF high-risk → +transaction risk
         │
         ▼
   Threshold mapping
@@ -30,24 +30,24 @@ composite_risk_score
   Post-decision actions
   ├── FLAG: create alert, notify via webhook
   ├── STEP_UP: call step-up verification service
-  ├── HOLD: create alert, pause transaction
-  └── BLOCK: create alert, reject transaction
+  ├── HOLD: create alert, return HOLD decision
+  └── BLOCK: create alert, return BLOCK decision (bank enforces)
 ```
 
 ---
 
 ## Override triggers
 
-These checks run **before** threshold mapping and can force a decision regardless of score:
+These checks run **before** threshold mapping. They don't hard-code a decision — they **tighten the thresholds** (and open the relevant case or report), so a lower score is enough to reach `HOLD` or `BLOCK`:
 
-| Condition | Forced decision | Source |
+| Condition | Effect | Source |
 |---|---|---|
-| Customer on PEP list (confirmed) | `HOLD` | PEP matching at ingestion |
-| Sanctions match ≥ 95% | `BLOCK` | rapidfuzz 3-pass fuzzy match |
-| Sanctions match 80–94% | `HOLD` | Review tier |
-| FATF/high-risk counterparty jurisdiction | `FLAG` minimum | Jurisdiction config |
-| High-value cash transaction | `FLAG` + CTR draft | Jurisdiction CTR threshold |
-| Travel Rule threshold exceeded | `FLAG` + field requirement | FATF R.16 config |
+| Sanctions hit | Strictest thresholds → typically `BLOCK`; SANCTIONS case opened | [Screening API](/compliance/sanctions) (`/aml/check`) |
+| PEP hit | Stricter (PEP) thresholds; AML case opened | [Screening API](/compliance/sanctions) (`/aml/check`) |
+| Adverse-media hit | Stricter thresholds | [Screening API](/compliance/sanctions) (`/aml/check`) |
+| FATF / high-risk counterparty jurisdiction | Adds transaction-risk points | Jurisdiction config |
+| High-value cash transaction | Stricter thresholds; CTR drafted | Jurisdiction CTR threshold |
+| Travel Rule threshold exceeded | Travel Rule fields required | FATF R.16 config |
 
 ---
 
@@ -71,7 +71,7 @@ If the step-up service is unreachable or times out, the transaction falls back t
 Transaction accepted and stored. No alert created.
 
 ### FLAG
-- Alert created with priority based on score (`IMMEDIATE` if ≥ 110, `MEDIUM` otherwise)
+- Alert created with `REVIEW` priority (priority is derived from the combined score — see below)
 - Transaction stored and released
 - Webhook fired
 - Analyst queue updated
@@ -82,15 +82,19 @@ Transaction accepted and stored. No alert created.
 - If rejected or timeout → `HOLD`
 
 ### HOLD
-- Alert created with `IMMEDIATE` priority
+- Alert created with `BATCH` priority (combined score 150–199)
 - Transaction stored but held (not released to recipient)
 - Webhook fired
-- Case auto-created if hold persists > 24h
+- Case auto-created if the hold persists beyond 24h
 
 ### BLOCK
-- Alert created with `IMMEDIATE` priority
-- Transaction rejected; not stored as completed
+- Alert created with `IMMEDIATE` priority (combined score ≥ 200)
+- The `BLOCK` decision is returned in the ingestion response; the transaction is recorded but not released — your core banking system enforces the block
 - Webhook fired
+
+<Note>
+  **Alert priority** is derived from the combined score, independent of the decision label: `IMMEDIATE` at 200+, `BATCH` at 150–199, `REVIEW` at 90–149. There is no `MEDIUM` priority.
+</Note>
 
 ---
 

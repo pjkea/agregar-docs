@@ -14,9 +14,9 @@ composite = min(customer_score + transaction_score + behavioral_score, 300)
 
 | Layer | Max contribution | Source |
 |---|---|---|
-| **Customer risk** | 100 | Static profile: PEP status, jurisdiction, account age |
-| **Transaction risk** | 100 | Real-time signals: amount, channel, velocity, counterparty |
-| **Behavioral risk** | 100 | Historical patterns: deviation from customer baseline |
+| **Customer risk** | 100 | Static profile: customer type, occupation, jurisdiction, PEP status, KYC quality |
+| **Transaction risk** | 100 | Per-event signals: amount, channel, destination, type, timing |
+| **Behavioral risk** | 100 | The higher of: anomaly-detection rule contributions, or the ML model score |
 
 ---
 
@@ -40,59 +40,63 @@ The composite score maps to a decision:
 
 ## Override triggers
 
-Certain conditions bypass the score thresholds and force specific decisions regardless of score:
+Certain conditions **tighten the decision thresholds** (making a `HOLD` or `BLOCK` far more likely) and can trigger their own workflows, regardless of the base score. Sanctions, PEP, and adverse-media signals come from the [Screening API](/compliance/sanctions), not a fixed score bump:
 
-| Trigger | Forced decision |
+| Trigger | Effect |
 |---|---|
-| PEP match (confirmed) | `HOLD` |
-| Sanctions match ≥ 95% | `BLOCK` |
-| Sanctions match 80–94% | `HOLD` (pending review) |
-| High-value cash (above CTR threshold) | `FLAG` + CTR draft |
-| FATF high-risk jurisdiction counterparty | Score boost + `FLAG` minimum |
-| Travel Rule threshold exceeded | `FLAG` + Travel Rule fields required |
+| Sanctions hit (Screening API) | Strictest thresholds applied → typically `BLOCK`; a SANCTIONS case is opened automatically |
+| PEP hit (Screening API) | Stricter (PEP) thresholds applied; an AML case is opened automatically |
+| Adverse-media hit (Screening API) | Stricter thresholds applied |
+| High-value cash (above CTR threshold) | Stricter thresholds; a CTR is drafted automatically |
+| FATF / high-risk counterparty jurisdiction | Adds transaction-risk points |
+| Travel Rule threshold exceeded | Travel Rule originator/beneficiary fields required |
 
 ---
 
 ## Customer risk layer
 
-Computed once per customer and cached until their profile changes.
+Static, slow-changing customer attributes (0–100). Five components are summed and capped at 100:
 
-| Signal | Score contribution |
-|---|---|
-| PEP status | +40 |
-| High-risk jurisdiction | +25 |
-| Account age < 30 days | +20 |
-| Missing occupation | +10 |
-| Business account | +5 |
+| Component | Range | How it scores |
+|---|---|---|
+| Customer type | 0–25 | Individual 10 · Company 15 · Merchant 25 |
+| Occupation | 0–25 | Low-risk 5 · unknown 10 · medium-risk 15 · high-risk 25 |
+| Geography (home country) | 0–20 | Low-risk 0 · unknown 5 · medium-risk 10 · high-risk 20 |
+| PEP status | 0–20 | PEP 20 · non-PEP 0 |
+| KYC quality | 0–25 | Good (71–100) 0 · medium (41–70) 10 · poor (0–40) 20 · plus 5 if KYC is missing or older than 2 years |
+
+<Note>
+  KYC quality is the single biggest lever on a customer's static risk — poor or stale KYC starts a customer 20–25 points higher. Supply `customer_kyc_score` at ingestion so this scores accurately.
+</Note>
 
 ---
 
 ## Transaction risk layer
 
-Computed fresh on every transaction.
+Per-event signals from the transaction itself (0–100). Five components are summed and capped at 100:
 
-| Signal | Score contribution |
-|---|---|
-| Amount exceeds CTR threshold | +30 |
-| Cross-border to high-risk country | +20 |
-| Channel = `ATM` (cash withdrawal) | +15 |
-| Round-number amount | +10 |
-| No receiver ID on Transfer | +10 |
-| Known trusted device | −5 |
+| Component | Range | How it scores |
+|---|---|---|
+| Amount | 0–30 | Banded against jurisdiction thresholds (low 5 → critical 30) |
+| Channel | 0–25 | Bank 5 · Card 10 · ATM 15 · Momo 20 · Agent 25 |
+| Destination country | 0–20 | Low-risk 0 · unknown 5 · medium-risk 10 · high-risk 20 |
+| Transaction type | 0–15 | Weighted by type |
+| Timing | 0–12 | Off-hours / unusual timing add points |
 
 ---
 
 ## Behavioral risk layer
 
-Compares this transaction to the customer's 30-day rolling baseline.
+Unlike the two layers above, behavioral risk is **not a fixed point table**. It is the higher of two independent signals (0–100):
 
-| Signal | Score contribution |
-|---|---|
-| Amount > 3σ above customer mean | +30 |
-| Transaction count spike (last 1h > baseline) | +20 |
-| Unusual channel for this customer | +15 |
-| Unusual time of day | +10 |
-| New counterparty (never transacted before) | +5 |
+```
+behavioral = max(rule_contributions, ml_score)
+```
+
+- **Rule contributions** — the anomaly-detection rules that fire on this transaction (velocity and burst patterns, structuring, device sharing, counterparty anomalies, deviation from the customer's 30-day baseline, …) each add a contribution; the total is capped at 100.
+- **ML score** — the ensemble model (XGBoost / CatBoost / LightGBM / River, scaled 0–100) catches patterns the rules miss.
+
+Taking the max means a strong rule signal **or** a strong model signal is enough on its own. The individual rules are covered in [Detection Rules](/concepts/detection-rules).
 
 ---
 
