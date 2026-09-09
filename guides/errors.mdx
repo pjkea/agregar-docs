@@ -55,7 +55,7 @@ All errors follow a consistent JSON envelope:
 | `404` | `not_found` | Resource does not exist or is not visible to your institution |
 | `409` | `business_logic` | Conflict — duplicate action or state machine violation |
 | `422` | `business_logic` | Business rule violation |
-| `429` | `authentication` | Too many failed login attempts — temporary account lockout |
+| `429` | — | Rate limit exceeded — 300 req/min per IP at the gateway (burst 60) |
 | `500` | `system` | Unexpected internal error |
 | `502` | `external` | Upstream dependency failure |
 | `503` | `external` | Service temporarily unavailable |
@@ -200,11 +200,9 @@ Returned when:
 
 ## 429 — Too many requests
 
-The only endpoint that returns `429` today is **login**: repeated failed `POST /auth/login` attempts trigger a temporary account lockout to slow credential-stuffing. Back off and retry after the lockout window; a successful login resets the counter.
+The API gateway rate-limits **per client IP**: **300 requests per minute** (~5/s) across all `/api/*` endpoints combined, with a short **burst allowance of 60**. Exceeding it returns `429`. The limit is keyed on IP (not API key) and shared across endpoints; `GET /api/v1/health` is exempt.
 
-<Warning>
-  The ingestion and read APIs are **not** currently rate-limited. Do not rely on the platform to throttle your traffic — size your own request rate to your agreed volume, and contact Agregar before driving sustained high throughput.
-</Warning>
+Back off and retry. For high volume, prefer `POST /ingestion/batch` (up to 1,000 transactions per request) over many single calls — a batch is one request against the limit.
 
 ---
 
