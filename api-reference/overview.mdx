@@ -1,62 +1,126 @@
 ---
 title: API Reference
-description: "Full endpoint reference — explore and try every endpoint live"
+description: "Every endpoint you need, and the credential each one takes"
 ---
 
-The full interactive API reference is auto-generated from the live OpenAPI specification.
-
-<Card title="Open API Explorer" icon="rectangle-terminal" href="https://monitor.agregartech.com/docs">
-  Browse every endpoint, see request/response schemas, and try calls directly in the browser
-</Card>
-
----
-
-## OpenAPI spec
-
-The raw OpenAPI 3.x spec is available at:
+Base URL:
 
 ```
-https://monitor.agregartech.com/openapi.json
+https://monitor.agregartech.com/api/v1
 ```
 
-Use this to generate client SDKs, import into Postman, or integrate with any OpenAPI-compatible tooling.
+This page lists the endpoints an integrating institution uses. The API exposes more than these — platform administration, rule authoring, ML operations and analytics are used by the Validar console, not by your integration — so they are omitted here deliberately. The full machine-readable surface is always at [`/openapi.json`](https://monitor.agregartech.com/openapi.json).
+
+**Key**: `K` = API key (`X-API-Key`) · `T` = Bearer token · see [Authentication](/authentication).
 
 ---
 
-## Endpoint groups
+## Send transactions
 
-| Group | Base path | What it does |
-|---|---|---|
-| **Health** | `/health` | Service status (unauthenticated) |
-| **Auth** | `/auth` | Login, token refresh |
-| **Ingestion** | `/ingestion` | Submit transactions (single, batch, validate) |
-| **Transactions** | `/transactions` | Query transaction history and detail |
-| **Alerts** | `/alerts` | List, view, resolve, and annotate AML alerts |
-| **Cases** | `/cases` | Investigation case lifecycle management |
-| **STR Reports** | `/str-reports` | Suspicious Transaction Report drafts and filings |
-| **CTR Reports** | `/ctr-reports` | Currency Transaction Report drafts and filings |
-| **Filings** | `/filings` | Immutable filed snapshots + goAML XML (regulator access) |
-| **Customers** | `/customers` | Customer profiles and risk scores |
-| **Rules** | `/rules` | AML detection rule management |
-| **Approvals** | `/approvals` | Four-eyes approval queue |
-| **Sanctions** | `/sanctions` | Sanctions screening status and management |
-| **Watchlists** | `/watchlists` | PEP and custom watchlist management |
-| **Institutions** | `/institutions` | Institution lifecycle (platform admin) |
-| **Users** | `/users` | User management and team invitations |
-| **API Keys** | `/api-keys` | Institution API key management |
-| **Audit Trail** | `/audit-trail` | Full decision and action audit log |
-| **Analytics** | `/analytics` | Risk reports, geo heatmaps, clustering |
-| **Webhooks** | `/webhooks` | Inbound webhook receiver and outbound test |
-| **USSD** | `/ussd` | Synchronous sanctions-gated fast-path (&lt;2s) |
-| **Verification** | `/verification` | Step-up verification for medium-risk transactions |
-| **NDPA** | `/ndpa` | Data subject access and erasure requests |
+| Endpoint | Auth | Purpose |
+|---|:---:|---|
+| `POST /ingestion/transaction` | K T | Submit one transaction |
+| `POST /ingestion/batch` | K T | Submit up to 1,000 (needs `source_system`) |
+| `POST /ingestion/validate` | K T | Check a payload without storing it |
+| `GET /ingestion/batch/{batch_id}/status` | K T | Progress of a batch |
+
+See [Ingestion](/guides/ingestion).
 
 ---
 
-## Authentication in the explorer
+## Read what happened
 
-Click **Authorize** in the API explorer and enter either:
-- Your API key in the `X-API-Key` field, or
-- A Bearer token (get one from `POST /auth/login`)
+| Endpoint | Auth | Purpose |
+|---|:---:|---|
+| `GET /alerts` | K T | List alerts. Filters: `customer_id`, `priority`, `status`, `assigned_to`, `start_date`, `end_date` |
+| `GET /alerts/{alert_id}` | K T | One alert, with the rules that fired |
+| `GET /transactions` | T | List transactions |
+| `GET /transactions/{transaction_id}` | T | One transaction, with its score breakdown |
+| `GET /customers/{customer_id}/risk-profile` | T | Customer risk profile |
+| `GET /customers/{customer_id}/transactions` | T | That customer's transactions |
+| `GET /customers/{customer_id}/alerts` | T | That customer's alerts |
 
-All try-it calls go directly to the production API.
+<Warning>
+  The rows marked **T** reject an API key with `401 Could not validate credentials`. Use a Bearer token for those.
+</Warning>
+
+See [Alerts](/api-reference/alerts) and [Transactions](/api-reference/transactions).
+
+---
+
+## Work an alert
+
+| Endpoint | Auth | Purpose |
+|---|:---:|---|
+| `PATCH /alerts/{alert_id}` | T | Update status or priority |
+| `POST /alerts/{alert_id}/assign` | T | Assign to an analyst |
+| `POST /alerts/{alert_id}/resolve` | T | Close it, with a reason |
+| `POST /alerts/{alert_id}/escalate` | T | Escalate into a case |
+| `POST /alerts/{alert_id}/notes` | T | Add a note |
+
+---
+
+## Cases
+
+| Endpoint | Auth | Purpose |
+|---|:---:|---|
+| `GET /cases` | T | List cases |
+| `GET /cases/{case_id}` | T | One case |
+| `POST /cases` | T | Open a case |
+| `PATCH /cases/{case_id}/status` | T | Move it through the workflow |
+| `PATCH /cases/{case_id}/assign` | T | Assign it |
+| `POST /cases/{case_id}/notes` | T | Add a note |
+| `POST /cases/{case_id}/alerts` | T | Link another alert |
+| `POST /cases/{case_id}/sar-filing` | T | Draft an STR from the case |
+
+See [Cases](/api-reference/cases).
+
+---
+
+## Reports and filing
+
+| Endpoint | Auth | Purpose |
+|---|:---:|---|
+| `GET /str-reports` | T | List STR drafts and filings |
+| `GET /str-reports/{report_id}` | T | One STR |
+| `POST /str-reports/{report_id}/file` | T | File it (may require a second approver) |
+| `GET /str-reports/{report_id}/goaml-xml` | T | goAML v4 XML |
+| `GET /ctr-reports` | T | List CTRs |
+| `GET /ctr-reports/{report_id}/goaml-xml` | T | goAML v4 XML |
+
+See [goAML filing](/compliance/goaml).
+
+---
+
+## Webhooks
+
+| Endpoint | Auth | Purpose |
+|---|:---:|---|
+| `GET /webhooks/endpoints` | K T | List your registered endpoints |
+| `POST /webhooks/endpoints` | K T | Register one (returns the signing secret **once**) |
+| `PATCH /webhooks/endpoints/{endpoint_id}` | K T | Change URL or events |
+| `DELETE /webhooks/endpoints/{endpoint_id}` | K T | Remove one |
+| `GET /webhooks/endpoints/{endpoint_id}/deliveries` | K T | Delivery log |
+| `POST /webhooks/test` | K T | Send yourself a test event |
+
+See [Webhooks](/guides/webhooks).
+
+---
+
+## Service
+
+| Endpoint | Auth | Purpose |
+|---|:---:|---|
+| `GET /health` | none | Liveness |
+| `GET /ingestion/health` | K T | Ingestion pipeline status |
+| `POST /auth/login` | none | Exchange credentials for tokens |
+| `POST /auth/refresh` | none | New access token from a refresh token |
+
+---
+
+## Conventions
+
+- **Paging**: `page` (from 1) and `page_size` on every list endpoint. Responses carry `items` plus a total.
+- **Dates**: ISO-8601 UTC, e.g. `2026-09-11T09:30:00Z`.
+- **Money**: decimal, not minor units. `5000.00` means 5,000.00.
+- **Errors**: see [Errors](/guides/errors) for every code and its fix.

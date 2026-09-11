@@ -1,0 +1,81 @@
+---
+title: "Scoring and decisions"
+description: "How a transaction becomes a score, a decision, and an alert."
+icon: "gauge"
+---
+
+Everything you need to read a response. One score, one decision, and the rules that explain both.
+
+---
+
+## The score
+
+Every transaction gets a composite score from **0 to 300**, from three independent layers:
+
+```
+composite = min(customer + transaction + behavioural, 300)
+```
+
+| Layer | Max | Built from |
+|---|---|---|
+| **Customer** | 100 | Static profile: customer type, occupation, home jurisdiction, PEP status, KYC quality |
+| **Transaction** | 100 | This payment: amount, channel, destination, type, timing |
+| **Behavioural** | 100 | The higher of the detection rules' contribution or the ML model's score |
+
+KYC quality is the largest single lever on the customer layer: poor or stale KYC starts a customer 20-25 points higher. Send `customer_kyc_score` at ingestion so this scores accurately rather than defaulting.
+
+---
+
+## The decision
+
+| Score | Decision | What happens |
+|---|---|---|
+| 0-89 | `ALLOW` | Proceeds normally |
+| 90-119 | `FLAG` | Proceeds; alert raised for review |
+| 120-149 | `STEP_UP` | Additional verification requested before release |
+| 150-199 | `HOLD` | Held pending manual review |
+| 200-300 | `BLOCK` | Blocked |
+
+<Note>
+  These are the Ghana (GHA) defaults. Thresholds are configurable per jurisdiction, so confirm yours before calibrating against them.
+</Note>
+
+---
+
+## What overrides the score
+
+Some signals do not add points — they **tighten the thresholds**, which makes a `HOLD` or `BLOCK` far more likely at the same score, and some open a case on their own.
+
+| Signal | Effect |
+|---|---|
+| Sanctions hit | Strictest thresholds, typically `BLOCK`; a SANCTIONS case opens automatically |
+| PEP hit | Stricter thresholds; an AML case opens automatically |
+| Adverse information hit | Stricter thresholds |
+| Cash above the CTR threshold | Stricter thresholds; a CTR is drafted automatically |
+| High-risk counterparty jurisdiction (FATF) | Adds transaction-layer points |
+| Travel Rule threshold exceeded | Originator and beneficiary fields become required |
+
+Sanctions, PEP and adverse signals come from the [screening service](/compliance/sanctions), not from a fixed score bump.
+
+---
+
+## What drives the behavioural layer
+
+Two engines run over every transaction, and the higher result is taken:
+
+- **Detection rules** — 15 anomaly rules plus 103 production rules covering amount thresholds, velocity, behavioural deviation, counterparty networks, mobile-money patterns specific to Ghana, Nigeria and Kenya, and device signals (sharing, SIM swap, IMEI change).
+- **ML ensemble** — gradient-boosted models plus an online learner that updates continuously from analyst decisions.
+
+Every alert lists exactly which rules fired and what each contributed, so a score is always explainable. You do not need to know the rule catalogue to integrate; you need to read `triggered_rules` on the alert.
+
+---
+
+## Device signals are optional, and they matter
+
+`device_id`, `iccid`, `imei` and `is_rooted` are optional. Rules degrade gracefully without them, which is why USSD payments still score. But the behavioural layer is substantially weaker without device data, and in practice it is often the dominant contributor. Send it where you have it.
+
+---
+
+## Worth knowing when you calibrate
+
+A transaction's score is not fixed at ingestion in isolation: velocity and behavioural rules compare it against the customer's history. The same payment sent to an account with no history scores differently from one sent to an established account. When you replay historical data to calibrate, replay it in chronological order.

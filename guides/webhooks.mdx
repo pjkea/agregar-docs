@@ -1,19 +1,9 @@
 ---
 title: Webhooks
-description: "Register per-tenant endpoints and receive real-time push events for transaction decisions, alerts, cases, and regulatory filings"
+description: "Get pushed events instead of polling"
 ---
 
-The Transaction Monitor pushes events to your registered HTTPS endpoint as they happen. Each institution registers its own URL — no shared global config, no polling.
-
----
-
-## How it works
-
-1. You register an endpoint URL via `POST /webhooks/endpoints`
-2. We return a **signing secret** — store it securely, it's shown once
-3. We POST a signed JSON envelope to your URL as events occur
-4. You verify the signature, return 2xx within 10 seconds, process async
-5. Failed deliveries retry 4 times with exponential back-off (30 s → 5 m → 30 m → 2 h)
+Validar pushes events to your HTTPS endpoint as they happen. Each institution registers its own URLs; there is no shared configuration and no polling required.
 
 ---
 
@@ -21,339 +11,132 @@ The Transaction Monitor pushes events to your registered HTTPS endpoint as they 
 
 ```bash
 curl -X POST https://monitor.agregartech.com/api/v1/webhooks/endpoints \
-  -H "Authorization: Bearer <token>" \
+  -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "url": "https://your-system.example.com/webhooks/tms",
-    "events": ["TRANSACTION_SCORED", "ALERT_GENERATED", "STR_FILED"],
-    "description": "Fidelity core banking integration"
+    "url": "https://your-system.example.com/validar-hook",
+    "events": ["TRANSACTION_SCORED", "ALERT_GENERATED"]
   }'
 ```
 
-**Response (201 Created):**
-
 ```json
 {
-  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "url": "https://your-system.example.com/webhooks/tms",
-  "events": ["TRANSACTION_SCORED", "ALERT_GENERATED", "STR_FILED"],
+  "id": "6e1a1542-eb16-4721-8c66-3f81ee10389d",
+  "url": "https://your-system.example.com/validar-hook",
+  "events": ["TRANSACTION_SCORED", "ALERT_GENERATED"],
   "is_active": true,
-  "description": "Fidelity core banking integration",
-  "created_at": "2026-06-15T10:00:00Z",
-  "secret": "a3f8c2d1e4b7..."
+  "secret": "4ca15b7fecddc2590ec44c5b178249a5..."
 }
 ```
 
 <Warning>
-  The `secret` is returned **only at registration time**. Store it immediately in your secrets manager. To rotate it, delete the endpoint and re-register.
+  `secret` is returned **once**, at creation. Store it now — you need it to verify signatures, and it cannot be retrieved later.
 </Warning>
 
-### Available event types
+---
+
+## Events
 
 | Event | Fires when |
 |---|---|
-| `TRANSACTION_SCORED` | Every transaction finishes the full AML pipeline |
-| `ALERT_GENERATED` | A high-priority (P1/Immediate) alert is created |
-| `CASE_CREATED` | A case is opened from an alert |
+| `TRANSACTION_SCORED` | A transaction finishes scoring |
+| `ALERT_GENERATED` | An alert is raised |
+| `CASE_CREATED` | A case is opened |
 | `CASE_ESCALATED` | A case is escalated |
-| `SLA_BREACH` | A case exceeds its SLA threshold |
-| `STR_FILED` | A Suspicious Transaction Report is filed |
-| `CTR_FILED` | A Currency Transaction Report is filed |
+| `SLA_BREACH` | A case passes its SLA deadline |
+| `STR_FILED` | An STR is filed |
+| `CTR_FILED` | A CTR is filed |
 
-Subscribe to only the events you need. You can update subscriptions at any time with `PATCH /webhooks/endpoints/{id}`.
-
----
-
-## Event envelope
-
-Every event uses the same outer shape:
-
-```json
-{
-  "id": "evt_a1b2c3d4e5f6...",
-  "event_type": "TRANSACTION_SCORED",
-  "api_version": "2026-06-15",
-  "created_at": "2026-06-15T10:30:00.123456Z",
-  "livemode": true,
-  "data": { ... }
-}
-```
-
-Check `event_type` first; the structure of `data` depends on it.
+Subscribing to an unlisted value returns `422` naming the valid set.
 
 ---
 
-## Event payloads
+## What you receive
 
-### `TRANSACTION_SCORED`
+Every delivery is a POST with three headers:
 
-Fires on every transaction that completes scoring — including `ALLOW` decisions. This is the event to listen to for your retry / result-retrieval flow.
+| Header | Contents |
+|---|---|
+| `X-TMS-Signature` | `sha256=<hex digest>` |
+| `X-TMS-Event` | The event type |
+| `X-TMS-Delivery` | Unique delivery id, for idempotency |
+
+The body is the same envelope for every event, with an event-specific `data`:
 
 ```json
 {
-  "id": "evt_...",
-  "event_type": "TRANSACTION_SCORED",
-  "api_version": "2026-06-15",
-  "created_at": "2026-06-15T10:30:00Z",
-  "livemode": true,
+  "event": "ALERT_GENERATED",
+  "timestamp": "2026-09-11T09:30:00Z",
   "data": {
-    "transaction_id": "TXN-20260615-001",
-    "customer_id": "CUST-001",
-    "amount": 500.00,
-    "transaction_type": "Transfer",
-    "channel": "Momo",
-    "combined_risk_score": 185,
-    "decision": "FLAG",
-    "flagged": true,
-    "alert_generated": true,
-    "alert_priority": "IMMEDIATE",
-    "alert_id": "ALT-20260615-042",
-    "triggered_rules": ["VEL_007", "HIGH_RISK_COUNTRY_001"],
-    "ml_score": 0.82,
-    "sanctions_result": "CLEAR"
-  }
-}
-```
-
-`decision` is one of `ALLOW`, `FLAG`, `HOLD`, `BLOCK`, or `STEP_UP`.
-
----
-
-### `ALERT_GENERATED`
-
-```json
-{
-  "data": {
-    "alert_id": "ALT-20260615-042",
-    "transaction_id": "TXN-20260615-001",
-    "customer_id": "CUST-001",
-    "priority": "IMMEDIATE",
+    "alert_id": "ALT-931009009142",
+    "transaction_id": "TXN-DACB711B5551",
+    "customer_id": "CUST001",
     "risk_score": 185,
-    "triggered_rules": ["VEL_007", "HIGH_RISK_COUNTRY_001"],
-    "status": "OPEN",
-    "alert_url": "/api/v1/alerts/ALT-20260615-042"
+    "priority": "IMMEDIATE",
+    "status": "OPEN"
   }
 }
 ```
 
----
-
-### `CASE_CREATED` / `CASE_ESCALATED`
-
-```json
-{
-  "data": {
-    "case_id": "CASE-0042",
-    "case_status": "ESCALATED",
-    "alert_id": "ALT-20260615-042"
-  }
-}
-```
+Use `POST /webhooks/test` to receive a real delivery of any event type against your endpoint, so you can confirm shape and signature before going live.
 
 ---
 
-### `SLA_BREACH`
+## Verify the signature
 
-```json
-{
-  "data": {
-    "case_id": "CASE-0042",
-    "case_status": "OPEN",
-    "hours_overdue": 6.5
-  }
-}
+Always verify before acting. The signature is an HMAC-SHA256 of the **raw request body** using your endpoint secret.
+
+```python
+import hmac, hashlib
+
+def valid(raw_body: bytes, header: str, secret: str) -> bool:
+    if not header.startswith("sha256="):
+        return False
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, header[len("sha256="):])
 ```
+
+Two things that will bite you: compute the HMAC over the **raw bytes** you received, not over a re-serialised object, and compare with `compare_digest` rather than `==`.
 
 ---
 
-### `STR_FILED`
+## Delivery and retries
 
-```json
-{
-  "data": {
-    "report_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-    "report_type": "STR",
-    "case_id": "CASE-0042",
-    "jurisdiction_id": "550e8400-e29b-41d4-a716-446655440000",
-    "filed_by": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
-    "filing_reference": "STR-GHA-2026-00042"
-  }
-}
-```
+Respond `2xx` within **10 seconds**. Anything else is a failure and is retried:
 
-After receiving this, fetch the full filing:
-```
-GET /api/v1/filings/{report_id}
-GET /api/v1/filings/{report_id}/goaml   ← goAML XML
-```
-
----
-
-### `CTR_FILED`
-
-```json
-{
-  "data": {
-    "report_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-    "report_type": "CTR",
-    "jurisdiction_id": "550e8400-e29b-41d4-a716-446655440000",
-    "filing_reference": "CTR-GHA-2026-00107"
-  }
-}
-```
-
----
-
-## Verifying the signature
-
-Every delivery includes an `X-TMS-Signature` header. Verify it before processing.
-
-```
-X-TMS-Signature: sha256=3c5e2a...
-X-TMS-Event: TRANSACTION_SCORED
-X-TMS-Delivery: evt_3fa85f64...
-```
-
-<CodeGroup>
-
-```python Python
-import hashlib, hmac
-from fastapi import Request, HTTPException
-
-async def verify_tms_webhook(request: Request, secret: str) -> dict:
-    body = await request.body()
-    sig_header = request.headers.get("X-TMS-Signature", "")
-
-    if not sig_header.startswith("sha256="):
-        raise HTTPException(status_code=401, detail="Missing signature")
-
-    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    received = sig_header[len("sha256="):]
-
-    if not hmac.compare_digest(expected, received):
-        raise HTTPException(status_code=401, detail="Invalid signature")
-
-    return await request.json()
-```
-
-```javascript Node.js
-const crypto = require('crypto');
-
-function verifyTmsWebhook(body, signatureHeader, secret) {
-  const expected = crypto
-    .createHmac('sha256', secret)
-    .update(body)           // raw Buffer, not parsed JSON
-    .digest('hex');
-  const received = signatureHeader.replace('sha256=', '');
-  return crypto.timingSafeEqual(
-    Buffer.from(expected),
-    Buffer.from(received)
-  );
-}
-```
-
-</CodeGroup>
-
-<Warning>
-  Compute the HMAC over the **raw request body bytes**, not a re-serialised JSON string. Any whitespace difference will cause a mismatch.
-</Warning>
-
----
-
-## Delivery guarantees
-
-| Property | Detail |
+| Attempt | Wait |
 |---|---|
-| Timeout | 10 seconds per attempt |
-| Retry schedule | Immediate → 30 s → 5 min → 30 min → 2 h (max 5 attempts) |
-| After 5 failures | Delivery marked `failed`; no further retries |
-| Idempotency key | `id` field in the envelope (`evt_...`) — deduplicate on this |
-| Ordering | No ordering guarantee across events; use `created_at` if sequence matters |
+| 1 | immediate |
+| 2 | 30 seconds |
+| 3 | 5 minutes |
+| 4 | 30 minutes |
+| 5 | 2 hours |
 
-**Your endpoint should respond 2xx within 3 seconds** and process asynchronously. Any 2xx is accepted; we don't read the response body.
+After 5 failed attempts the delivery is marked permanently failed and is not retried.
+
+Deliveries are **at-least-once**: a slow `2xx` can still be retried, so the same event may arrive twice. Deduplicate on `X-TMS-Delivery`.
+
+Do your processing after responding. Acknowledge first, work second.
 
 ---
 
-## Delivery log
-
-Inspect delivery history to debug failures:
+## When something is missing
 
 ```bash
-GET /api/v1/webhooks/endpoints/{id}/deliveries
+curl "https://monitor.agregartech.com/api/v1/webhooks/endpoints/{endpoint_id}/deliveries" \
+  -H "X-API-Key: $API_KEY"
 ```
 
-```json
-[
-  {
-    "id": "...",
-    "event_type": "TRANSACTION_SCORED",
-    "status": "delivered",
-    "attempt_count": 1,
-    "response_status": 200,
-    "created_at": "2026-06-15T10:30:00Z",
-    "last_attempt_at": "2026-06-15T10:30:01Z"
-  },
-  {
-    "id": "...",
-    "event_type": "ALERT_GENERATED",
-    "status": "pending",
-    "attempt_count": 2,
-    "response_status": 503,
-    "created_at": "2026-06-15T10:31:00Z",
-    "next_retry_at": "2026-06-15T11:01:00Z"
-  }
-]
-```
+Shows each attempt with its response code and body, which is usually enough to tell a TLS problem from a 500 in your handler.
+
+Webhooks are a convenience, not the system of record. Anything delivered by webhook can also be read from [`/alerts`](/api-reference/alerts) and [`/cases`](/api-reference/cases).
 
 ---
 
-## Test your endpoint
+## Manage
 
-Before going live, fire a test event to your URL:
-
-```bash
-curl -X POST https://monitor.agregartech.com/api/v1/webhooks/test \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "TEST",
-    "webhook_url": "https://your-system.example.com/webhooks/tms",
-    "payload": { "hello": "world" }
-  }'
-```
-
-The test payload is wrapped in the standard event envelope so your signature verification runs exactly as in production.
-
----
-
-## Managing endpoints
-
-```bash
-# List all your registered endpoints
-GET  /api/v1/webhooks/endpoints
-
-# Pause deliveries without deleting
-PATCH /api/v1/webhooks/endpoints/{id}
-{ "is_active": false }
-
-# Update subscribed events
-PATCH /api/v1/webhooks/endpoints/{id}
-{ "events": ["TRANSACTION_SCORED", "STR_FILED"] }
-
-# Delete (all pending deliveries are cancelled)
-DELETE /api/v1/webhooks/endpoints/{id}
-```
-
----
-
-## REST fallbacks
-
-If your endpoint was unavailable and deliveries exhausted retries:
-
-| Missed event | Fallback |
+| Endpoint | Purpose |
 |---|---|
-| `TRANSACTION_SCORED` | `GET /transactions/{transaction_id}` |
-| `ALERT_GENERATED` | `GET /alerts?status=OPEN&priority=IMMEDIATE` |
-| `STR_FILED` | `GET /filings?report_type=STR` |
-| `CTR_FILED` | `GET /filings?report_type=CTR` |
-| `CASE_ESCALATED` / `SLA_BREACH` | `GET /cases?status=ESCALATED` |
+| `GET /webhooks/endpoints` | List yours |
+| `PATCH /webhooks/endpoints/{id}` | Change URL or event list |
+| `DELETE /webhooks/endpoints/{id}` | Remove (returns `204`) |

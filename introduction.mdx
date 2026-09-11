@@ -1,24 +1,22 @@
 ---
 title: Introduction
-description: "Real-time AML/CFT transaction monitoring for African mobile-money flows"
+description: "Real-time AML/CFT transaction monitoring for African mobile-money and banking flows"
 ---
 
-## What is Agregar Transaction Monitor?
-
-The Agregar Transaction Monitor is a compliance API that detects suspicious activity in mobile-money and banking transactions in real time. Send a transaction in, get back a risk decision — and receive alerts, cases, and regulatory filings automatically.
+Validar is Agregar's transaction monitoring product. Send a transaction, get back a risk decision, and receive the alerts, cases and regulatory filings that follow.
 
 <CardGroup cols={2}>
   <Card title="Quickstart" icon="rocket" href="/quickstart">
-    Authenticate and send your first transaction in 10 minutes
+    Send your first transaction and see the alert it raises
+  </Card>
+  <Card title="Authentication" icon="key" href="/authentication">
+    Two credentials, and which endpoints accept each
   </Card>
   <Card title="API Reference" icon="rectangle-terminal" href="/api-reference/overview">
-    Full endpoint reference auto-generated from the live OpenAPI spec
+    Every endpoint you need, with its required credential
   </Card>
-  <Card title="Webhooks" icon="webhook" href="/guides/webhooks">
-    Receive real-time push events for alerts, cases, and filings
-  </Card>
-  <Card title="Error Reference" icon="circle-exclamation" href="/guides/errors">
-    Every error code with cause and fix
+  <Card title="Errors" icon="circle-exclamation" href="/guides/errors">
+    Every code, with the fix
   </Card>
 </CardGroup>
 
@@ -27,33 +25,32 @@ The Agregar Transaction Monitor is a compliance API that detects suspicious acti
 ## How it works
 
 ```
-Your system → POST /ingestion/transaction
-                     ↓
-          Anomaly detection (15 rules + 103 ezrules)
-                     ↓
-          Risk scoring (0–300, three layers)
-                     ↓
-          Decision engine → ALLOW / FLAG / HOLD / BLOCK
-                     ↓
-          Alert created if threshold exceeded
-                     ↓
-          Case management → STR/CTR filing → goAML XML
+Your system  →  POST /ingestion/transaction
+                        ↓
+              Detection rules + ML scoring
+                        ↓
+              Risk score 0-300, three layers
+                        ↓
+              ALLOW / FLAG / STEP_UP / HOLD / BLOCK
+                        ↓
+              Alert  →  Case  →  STR/CTR  →  goAML XML
 ```
+
+Scoring is asynchronous and completes in seconds. Ingestion returns immediately with a transaction id; you learn the outcome by reading [alerts](/api-reference/alerts) or by receiving a [webhook](/guides/webhooks).
 
 ---
 
-## Key capabilities
+## What it does
 
-| Capability | Detail |
+| | |
 |---|---|
-| **Ingestion** | REST (single + batch), Kafka, USSD fast-path (&lt;2s) |
-| **Detection** | 15 anomaly rules + 103 ezrules-style engine with shadow deployment |
-| **ML scoring** | Ensemble of XGBoost, CatBoost, LightGBM, River (online learning) |
-| **Risk decision** | ALLOW / FLAG / STEP_UP / HOLD / BLOCK with PEP and FATF overrides |
-| **Case management** | Alerts → Cases → STR/CTR drafts → goAML XML with four-eyes approval |
-| **Sanctions screening** | OFAC, UN, EU + OpenSanctions; fuzzy name matching |
+| **Ingestion** | REST single and batch (up to 1,000), Kafka, USSD fast-path |
+| **Detection** | 15 anomaly rules plus 103 production rules |
+| **ML scoring** | Gradient-boosted ensemble with an online learner |
+| **Decisions** | ALLOW / FLAG / STEP_UP / HOLD / BLOCK, with PEP and FATF overrides |
+| **Casework** | Alerts → cases → STR/CTR drafts → goAML XML, with four-eyes approval |
+| **Screening** | Sanctions, PEP and adverse information via OpenSanctions |
 | **Jurisdictions** | Ghana (primary), Nigeria, Kenya |
-| **Auth** | JWT + API key dual auth, RBAC, full audit trail |
 
 ---
 
@@ -63,4 +60,4 @@ Your system → POST /ingestion/transaction
 https://monitor.agregartech.com/api/v1
 ```
 
-All endpoints require authentication except `GET /health`.
+Everything except `GET /health` requires authentication. Start with [Authentication](/authentication) — an API key alone will not read transactions back, and that trips most integrations up on day one.

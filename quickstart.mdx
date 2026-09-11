@@ -1,55 +1,31 @@
 ---
 title: Quickstart
-description: "Get from zero to your first AML result in 10 minutes"
+description: "Send a transaction and see what the engine did with it"
 ---
 
-## Prerequisites
+You need an API key. Everything below is copy-paste runnable.
 
-- An Agregar institution account and API key — contact [support@agregartech.com](mailto:support@agregartech.com) to provision
-- Any HTTP client — cURL, Postman, or your language's HTTP library
-
----
-
-## Steps
+<Warning>
+  `timestamp` must be UTC, not in the future, and **not older than 90 days** — otherwise you get `400 timestamp ... is older than 90 days`. The examples generate it, so they cannot go stale.
+</Warning>
 
 <Steps>
-  <Step title="Verify the API is reachable">
-    No authentication needed for the health endpoint.
-
+  <Step title="Check the API is up">
     ```bash
     curl https://monitor.agregartech.com/api/v1/health
     ```
 
-    ```json
-    { "status": "healthy", "timestamp": "2026-06-11T08:00:00Z" }
-    ```
+    No authentication needed. Returns `200` with `{"status": "healthy", ...}`.
   </Step>
 
-  <Step title="Authenticate">
-    Include your API key in every request header:
-
-    ```bash
-    curl https://monitor.agregartech.com/api/v1/transactions \
-      -H "X-API-Key: your_api_key_here"
-    ```
-
-    <Note>
-      For user sessions, log in with **form data** (not JSON) to get a JWT. See the [Authentication guide](/authentication) for details.
-    </Note>
-  </Step>
-
-  <Step title="Send your first transaction">
-    <Warning>
-      Replace `timestamp` with the transaction's actual time in UTC. It must **not** be in the future and **not** older than 90 days — the illustrative value below will be rejected with a `400` once it ages past the window. This applies to every example on this page.
-    </Warning>
-
+  <Step title="Send a transaction">
     ```bash
     curl -X POST https://monitor.agregartech.com/api/v1/ingestion/transaction \
+      -H "X-API-Key: $API_KEY" \
       -H "Content-Type: application/json" \
-      -H "X-API-Key: your_api_key_here" \
       -d '{
         "customer_id": "CUST001",
-        "timestamp": "2026-06-11T09:30:00Z",
+        "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
         "amount": 5000.00,
         "transaction_type": "Transfer",
         "channel": "Momo",
@@ -58,69 +34,91 @@ description: "Get from zero to your first AML result in 10 minutes"
       }'
     ```
 
-    **Response (201 Created):**
+    **`201 Created`:**
 
     ```json
     {
       "success": true,
-      "transaction_id": "TXN-A1B2C3D4E5F6",
+      "transaction_id": "TXN-64B8F6BA3B2B",
+      "message": "Transaction ingested successfully",
       "queued_for_processing": true,
       "is_duplicate": false
     }
     ```
 
-    The transaction is queued for the full AML pipeline — anomaly detection → risk scoring → decision — and completes within seconds.
+    Required fields are `customer_id`, `timestamp`, `amount`, `transaction_type` and `channel`. Transfers also need `receiver_id`. Scoring runs asynchronously and completes in seconds, so `combined_risk_score` is `null` here.
   </Step>
 
-  <Step title="Check for alerts">
-    If the transaction triggers a rule, an alert is created automatically. Poll for it:
+  <Step title="Trigger something">
+    An everyday payment will not alert. To see the engine work, send one that should: a large cross-border transfer from a new customer.
 
     ```bash
-    curl "https://monitor.agregartech.com/api/v1/alerts?transaction_id=TXN-A1B2C3D4E5F6" \
-      -H "X-API-Key: your_api_key_here"
+    curl -X POST https://monitor.agregartech.com/api/v1/ingestion/transaction \
+      -H "X-API-Key: $API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "customer_id": "CUST999",
+        "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+        "amount": 185000.00,
+        "transaction_type": "Transfer",
+        "channel": "Momo",
+        "receiver_id": "CUST002",
+        "receiver_country": "AE",
+        "is_rooted": true
+      }'
+    ```
+  </Step>
+
+  <Step title="Read the alert">
+    ```bash
+    curl "https://monitor.agregartech.com/api/v1/alerts?customer_id=CUST999&page=1&page_size=5" \
+      -H "X-API-Key: $API_KEY"
     ```
 
-    Or set up a [webhook](/guides/webhooks) to receive alerts in real time without polling.
+    <Note>
+      Filter alerts by `customer_id`, not by transaction id — there is no `transaction_id` filter, and an unknown query parameter is ignored rather than rejected, so you would silently get every alert.
+    </Note>
+
+    Each alert carries the score, the band, and which rules fired. See [Alerts](/api-reference/alerts).
   </Step>
 </Steps>
 
 ---
 
-## Test without saving
+## Validate before you send
 
-Validate your payload shape without writing anything to the database:
+Check a payload against the schema without storing anything. Useful while you are mapping your fields.
 
 ```bash
 curl -X POST https://monitor.agregartech.com/api/v1/ingestion/validate \
+  -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your_api_key_here" \
   -d '{
     "customer_id": "CUST001",
-    "timestamp": "2026-06-11T09:30:00Z",
-    "amount": -50.00,
+    "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
+    "amount": 5000.00,
     "transaction_type": "Transfer",
-    "channel": "Momo"
+    "channel": "Momo",
+    "receiver_id": "CUST002"
   }'
 ```
 
-Use this to iron out payload issues before going live.
-
 ---
 
-## Batch ingestion
+## Batch
 
-Send up to 1,000 transactions in a single call:
+Up to 1,000 transactions per call. `source_system` is **required**.
 
 ```bash
 curl -X POST https://monitor.agregartech.com/api/v1/ingestion/batch \
+  -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your_api_key_here" \
   -d '{
     "source_system": "core_banking",
     "transactions": [
       {
         "customer_id": "CUST001",
-        "timestamp": "2026-06-11T09:00:00Z",
+        "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
         "amount": 1000.00,
         "transaction_type": "Deposit",
         "channel": "Bank"
@@ -129,20 +127,23 @@ curl -X POST https://monitor.agregartech.com/api/v1/ingestion/batch \
   }'
 ```
 
-If some rows fail, the response is `207 Multi-Status` — successful rows are still saved and the `failed_items` array shows what went wrong per row.
+```json
+{
+  "total_submitted": 1,
+  "successful": 1,
+  "failed": 0,
+  "failed_items": [],
+  "batch_id": "BATCH-4AB5022B-607"
+}
+```
+
+Rows are independent: valid ones are stored even if others fail, and `failed_items` says why per row. Track progress with `GET /ingestion/batch/{batch_id}/status`.
 
 ---
 
-## Next steps
+## Next
 
-<CardGroup cols={3}>
-  <Card title="Authentication" icon="key" href="/authentication">
-    API keys vs JWT, token refresh, scopes
-  </Card>
-  <Card title="Webhooks" icon="webhook" href="/guides/webhooks">
-    Receive real-time push events
-  </Card>
-  <Card title="Errors" icon="circle-exclamation" href="/guides/errors">
-    Every error code explained
-  </Card>
-</CardGroup>
+- [Authentication](/authentication) — which credential works on which endpoint (an API key alone will not read transactions back)
+- [Ingestion](/guides/ingestion) — every field, and how to map yours
+- [Webhooks](/guides/webhooks) — get pushed events instead of polling
+- [Errors](/guides/errors) — every code, with the fix
