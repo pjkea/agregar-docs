@@ -1,33 +1,57 @@
 ---
 title: Authentication
-description: "API key and JWT authentication — when to use each"
+description: "Two credentials, and which endpoints accept each"
 ---
 
-Every endpoint except `GET /health` requires authentication. The API accepts two methods — use whichever fits your use case.
-
----
-
-## API key (recommended for server-to-server)
-
-Pass the raw key in the `X-API-Key` header on every request:
-
-```bash
-curl https://monitor.agregartech.com/api/v1/transactions \
-  -H "X-API-Key: your_api_key_here"
-```
-
-API keys are provisioned per institution by Agregar admins, or by your institution's CLIENT_ADMIN via the dashboard (`Settings → API Keys`). Keys do not expire unless rotated or revoked.
+Every endpoint except `GET /health` requires authentication. There are two credentials and **they are not interchangeable** — read the table below before you start.
 
 ---
 
-## JWT (for user sessions)
-
-Use when building a user-facing dashboard or any integration that authenticates on behalf of a human user.
-
-### Log in
+## Which credential for which endpoint
 
 <Warning>
-  Login uses `application/x-www-form-urlencoded`, **not** JSON. Using `Content-Type: application/json` returns a 422.
+  An API key does **not** work on every endpoint. Reading transactions, cases, customers or reports requires a Bearer token. Using an API key there returns `401 Could not validate credentials`.
+</Warning>
+
+| Endpoint | API key | Bearer token |
+|---|:---:|:---:|
+| `POST /ingestion/transaction` | yes | yes |
+| `POST /ingestion/batch` | yes | yes |
+| `POST /ingestion/validate` | yes | yes |
+| `GET /ingestion/batch/{id}/status` | yes | yes |
+| `GET /alerts`, `GET /alerts/{id}` | yes | yes |
+| `GET /webhooks/endpoints` (and writes) | yes | yes |
+| `GET /health` | no auth | no auth |
+| `GET /transactions` | **no** | yes |
+| `GET /customers/...` | **no** | yes |
+| `GET /cases` | **no** | yes |
+| `GET /str-reports`, `GET /ctr-reports` | **no** | yes |
+
+In short: **push with an API key, read back with a token.** A typical integration uses both — the API key in your core banking system, a token in whatever your compliance team uses to review.
+
+---
+
+## API key
+
+Pass the raw key in `X-API-Key`:
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/ingestion/transaction \
+  -H "X-API-Key: your_api_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{ ... }'
+```
+
+Keys are issued per institution and scoped to it: you only ever see your own data. They do not expire unless rotated or revoked. A new key's raw value is shown **once**, at creation — store it immediately.
+
+Institution admins manage keys at `GET /api-keys`, `POST /api-keys`, `POST /api-keys/{key_id}/revoke` and `POST /api-keys/{key_id}/rotate`.
+
+---
+
+## Bearer token
+
+<Warning>
+  Login is `application/x-www-form-urlencoded`, **not** JSON. Sending JSON returns `422`.
 </Warning>
 
 ```bash
@@ -36,67 +60,35 @@ curl -X POST https://monitor.agregartech.com/api/v1/auth/login \
   -d "username=you@example.com&password=yourpassword"
 ```
 
-**Response:**
-
 ```json
 {
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIs...",
   "token_type": "bearer"
 }
 ```
 
-### Use the token
+Then:
 
 ```bash
-curl https://monitor.agregartech.com/api/v1/alerts \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+curl "https://monitor.agregartech.com/api/v1/transactions?page=1&page_size=20" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..."
 ```
 
-The access token expires after **30 minutes**. When you receive a `401 Could not validate credentials`, either exchange your `refresh_token` at `POST /api/v1/auth/refresh` for a new access token, or log in again.
+Access tokens last **30 minutes**, refresh tokens **7 days**. On `401`, exchange the refresh token at `POST /auth/refresh` rather than logging in again.
 
 ---
 
-## Choosing between the two
+## Roles
 
-| Scenario | Use |
+A token's role decides what it may do. An API key is not subject to roles — it is limited by the table above instead.
+
+| Role | Can do |
 |---|---|
-| Core banking system pushing transactions | API key |
-| Nightly batch job | API key |
-| User dashboard (browser) | JWT |
-| Mobile app acting on behalf of a user | JWT |
-| Service-to-service (no user) | API key |
+| `CLIENT_ADMIN` | Everything below, plus users and API keys |
+| `COMPLIANCE_OFFICER` | File STRs, manage cases, read everything |
+| `SENIOR_ANALYST` | Work and assign cases, file STRs |
+| `ANALYST` | Work assigned cases and the unassigned queue |
+| `AUDITOR` | Read-only, including the audit trail |
 
-You never need both in the same request. If both headers are present, the API key takes precedence.
-
----
-
-## Roles and permissions
-
-Every authenticated caller has a role that determines what they can do. Key roles:
-
-| Role | Who it's for | What they can do |
-|---|---|---|
-| `CLIENT_ADMIN` | Institution administrator | Manage users, API keys, all AML workflows |
-| `COMPLIANCE_OFFICER` | Compliance team | File STRs, manage cases, configure thresholds |
-| `SENIOR_ANALYST` | Lead analyst | View and assign all cases, file STRs |
-| `ANALYST` | AML analyst | View assigned cases and the unassigned queue |
-| `REGULATOR_VIEWER` | Regulatory body | Read-only access to filed STR/CTR reports |
-| `AGREGAR_ADMIN` | Agregar platform team | Full access across all institutions |
-
-A `403 Permission denied` means your role does not include the required permission for that endpoint. Contact your institution admin to adjust your role.
-
----
-
-## API key management
-
-Institution admins can manage keys at:
-
-```
-GET    /api/v1/api-keys          — list all keys for the institution
-POST   /api/v1/api-keys          — create a new key
-DELETE /api/v1/api-keys/{id}     — revoke a key
-POST   /api/v1/api-keys/{id}/rotate — rotate to a new secret
-```
-
-A new key's raw value is only returned once at creation time. Store it securely immediately.
+`403 Permission denied` means your role lacks the permission; ask your institution admin. `401` means the credential itself was rejected — check you are using the right one for that endpoint.

@@ -1,33 +1,47 @@
 ---
-title: "Sanctions Screening"
-description: "How sanctions, PEP, and adverse-media screening works at ingestion, and how a hit drives the decision."
+title: "Sanctions and PEP screening"
+description: "What is screened at ingestion, and how a hit changes the decision."
 icon: "shield-halved"
 ---
 
-## How screening works
+## What happens
 
-At ingestion, every transaction is screened through the **Screening API** — a dedicated service (`POST /api/v1/aml/check`) that checks the customer and counterparty names against sanctions, PEP, and adverse-media sources and returns a status for each signal plus an `is_listed` flag:
+Every transaction is screened against sanctions, PEP and adverse-information sources. Screening runs on a dedicated service, not on this API, so there is no endpoint for you to call — it happens as part of ingestion.
 
-| Signal | Result |
+| Signal | Source |
 |---|---|
-| **Sanctions** | A status per name: clear, potential match, or confirmed match |
-| **PEP** | A status per name: clear, potential match, or confirmed match |
-| **Adverse media** | Clear or hit |
-
-A hit does **not** directly assign a risk score. Instead it **tightens the decision thresholds** for that transaction (see [Decision Engine](/concepts/decision-engine)): a sanctions hit applies the strictest thresholds — so the transaction typically lands on `BLOCK` — while a PEP or adverse-media hit applies stricter thresholds. Sanctions and PEP hits also open the matching case automatically.
+| **Sanctions** | OFAC, UN, EU and OpenSanctions |
+| **PEP** | OpenSanctions politically-exposed-person records |
+| **Adverse information** | OpenSanctions criminal, wanted and person-of-interest listings |
 
 <Note>
-  A separate, local `rapidfuzz` three-pass matcher (MATCH ≥ 95 / REVIEW ≥ 80 / CLEAR below 80) powers **custom-watchlist** screening and the **USSD fast-path** sanctions gate. It is not the ingestion screening path described above — don't conflate the two.
+  Adverse information means **structured listings** — criminal convictions, wanted notices, debarment — not press coverage. Someone written about in the media but not listed anywhere will not appear here. If your risk appetite requires news screening, that is a separate feed and worth raising with us.
 </Note>
 
 ---
 
-## What the client sees
+## How a hit affects the decision
 
-Screening runs synchronously during ingestion, but a hit is **not** an HTTP rejection. Ingestion still returns `201 Created` — the request itself always succeeds. The verdict comes back as data, and your core banking system enforces it:
+A hit does **not** add points to the risk score. It **tightens the decision thresholds** for that transaction, which makes a `HOLD` or `BLOCK` far more likely at the same score:
 
-- **Synchronous** (`?process_immediately=true`, or once async processing completes) — the verdict fields are populated in the ingestion response.
-- **Asynchronous** (default) — poll `GET /api/v1/transactions/{transaction_id}` or subscribe to the `TRANSACTION_SCORED` [webhook](/guides/webhooks).
+| Hit | Effect |
+|---|---|
+| Sanctions | Strictest thresholds, typically `BLOCK`; a SANCTIONS case opens automatically |
+| PEP | Stricter thresholds; an AML case opens automatically |
+| Adverse information | Stricter thresholds |
+
+See [Scoring and decisions](/concepts/scoring).
+
+---
+
+## A hit is not an HTTP error
+
+Ingestion still returns `201 Created`. The request succeeded; the verdict comes back as **data**, and your core banking system is what enforces it.
+
+Scoring is asynchronous by default, so the verdict is not in the ingestion response. Get it either way:
+
+- poll `GET /api/v1/transactions/{transaction_id}` (needs a Bearer token), or
+- subscribe to the `TRANSACTION_SCORED` [webhook](/guides/webhooks).
 
 ```json
 {
@@ -40,83 +54,31 @@ Screening runs synchronously during ingestion, but a hit is **not** an HTTP reje
 }
 ```
 
-The full decision label (`BLOCK`, `HOLD`, …) and screening detail live on the scored transaction — fetch it with `GET /api/v1/transactions/{transaction_id}`. HOLD matches also surface in the review queue below.
-
 ---
 
-## Sanctions review queue
+## Name matching
 
-```bash
-GET /api/v1/watchlists/screening-queue
-```
+Matching is fuzzy, because sanctions lists and your customer records rarely agree on spelling, transliteration or name order. Scores band as:
 
-Returns all transactions in `HOLD` state from sanctions matches awaiting manual review.
-
----
-
-## Review a match
-
-```bash
-POST /api/v1/watchlists/screening-queue/{match_id}/review
-```
-
-```bash
-curl -X POST https://monitor.agregartech.com/api/v1/watchlists/screening-queue/MATCH-000345/review \
-  -H "Authorization: Bearer eyJ..." \
-  -H "Content-Type: application/json" \
-  -d '{
-    "decision": "FALSE_POSITIVE",
-    "notes": "Different person — customer born 1982 in Accra; SDN entry is a different individual."
-  }'
-```
-
-| Decision | Effect |
+| Score | Outcome |
 |---|---|
-| `CONFIRMED` | Transaction permanently blocked; SAR filed |
-| `FALSE_POSITIVE` | Hold lifted; transaction released; customer note added |
+| ≥ 95 | Match — treat as confirmed |
+| 80-94 | Review — an analyst decides |
+| < 80 | Clear |
 
----
-
-## PEP screening
-
-PEP records are screened by the same Screening API. A PEP hit applies stricter (PEP) decision thresholds and opens an AML case automatically. You can supplement screening with custom PEP entries in your own watchlist:
-
-```bash
-POST /api/v1/watchlists
-Content-Type: application/json
-
-{
-  "name": "John Mensah Doe",
-  "entity_type": "INDIVIDUAL",
-  "category": "PEP",
-  "reason": "Senior government official, Ministry of Finance",
-  "jurisdiction": "GHA"
-}
-```
+Expect false positives in the review band. That is deliberate: in screening, a missed match costs far more than an extra review.
 
 ---
 
 ## Custom watchlists
 
-```bash
-POST   /api/v1/watchlists          # add entry
-GET    /api/v1/watchlists          # list entries
-DELETE /api/v1/watchlists/{id}     # remove entry
-```
+You can maintain your own lists alongside the global ones — internal blocklists, previously-reported subjects, or names your compliance team wants flagged.
 
-Custom entries are screened using the same fuzzy-match logic.
+| Endpoint | Purpose |
+|---|---|
+| `GET /watchlists` | List your watchlists |
+| `GET /watchlists/{name}/entries` | Entries in one list |
+| `POST /watchlists/{name}/entries` | Add an entry |
+| `DELETE /watchlists/{name}/entries/{value}` | Remove an entry |
 
----
-
-## List update schedule
-
-Sanctions lists refresh daily at 02:00 UTC. Check last update time:
-
-```bash
-curl https://monitor.agregartech.com/api/v1/watchlists/list-status \
-  -H "X-API-Key: your_api_key_here"
-```
-
-<Note>
-  Screening adds approximately 15–30 ms to ingestion latency. The USSD fast-path (≤ 2s SLA) runs a lightweight sanctions gate first and defers full scoring to an async background task.
-</Note>
+These require a Bearer token.

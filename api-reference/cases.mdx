@@ -76,15 +76,25 @@ Returns the full case record, all linked alerts, SAR filing status, four-eyes ap
 
 ## Update case
 
+Status and assignment are separate endpoints; there is no `PATCH /cases/{case_id}`.
+
 ```bash
-PATCH /api/v1/cases/{case_id}
+PATCH /api/v1/cases/{case_id}/status     # to_status is required
+PATCH /api/v1/cases/{case_id}/assign
 ```
 
 ```bash
-curl -X PATCH https://monitor.agregartech.com/api/v1/cases/CASE-000456 \
+curl -X PATCH https://monitor.agregartech.com/api/v1/cases/CASE-000456/status \
   -H "Authorization: Bearer eyJ..." \
   -H "Content-Type: application/json" \
-  -d '{"status": "UNDER_INVESTIGATION", "assigned_to": "investigator-uuid"}'
+  -d '{"to_status": "UNDER_INVESTIGATION", "notes": "Assigned for review"}'
+```
+
+```bash
+curl -X PATCH https://monitor.agregartech.com/api/v1/cases/CASE-000456/assign \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{"assigned_to": "investigator-uuid"}'
 ```
 
 ---

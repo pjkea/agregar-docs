@@ -121,7 +121,9 @@ All errors follow a consistent JSON envelope:
 </Accordion>
 
 <Accordion title="Could not validate credentials">
-  Your access token has expired (they last 30 minutes) or is malformed. Refresh it via `POST /auth/refresh`, or re-authenticate via `POST /auth/login`.
+  **The most common cause is using an API key on an endpoint that requires a Bearer token.** Reading transactions, customers, cases or reports is token-only; an API key is rejected there with this exact message. See the table in [Authentication](/authentication).
+
+  Otherwise: your access token has expired (they last 30 minutes) or is malformed. Refresh it via `POST /auth/refresh`, or re-authenticate via `POST /auth/login`.
 </Accordion>
 
 <Accordion title="Invalid API key">

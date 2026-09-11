@@ -160,13 +160,13 @@ Returns the processing events for a single transaction in chronological order.
 ## Export transactions
 
 ```bash
-GET /api/v1/transactions/export
+GET /api/v1/export/transactions
 ```
 
 Downloads a CSV of transactions matching the same query parameters as the list endpoint.
 
 ```bash
-curl "https://monitor.agregartech.com/api/v1/transactions/export?start_date=2026-06-01&decision=FLAG" \
+curl "https://monitor.agregartech.com/api/v1/export/transactions?start_date=2026-06-01&decision=FLAG" \
   -H "X-API-Key: your_api_key_here" \
   -o transactions.csv
 ```
