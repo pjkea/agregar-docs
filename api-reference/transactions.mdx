@@ -4,6 +4,10 @@ description: "Query, filter, and inspect processed transactions."
 icon: "arrow-right-arrow-left"
 ---
 
+<Note>
+  Transaction endpoints are **token-only**. An API key returns `401 Could not validate credentials` — see [Authentication](/authentication).
+</Note>
+
 ## List transactions
 
 ```bash
@@ -31,7 +35,7 @@ Returns a paginated list of transactions for your institution.
 
 ```bash
 curl "https://monitor.agregartech.com/api/v1/transactions?decision=FLAG&min_score=90&page_size=25" \
-  -H "X-API-Key: your_api_key_here"
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 <ResponseExample>
@@ -69,7 +73,7 @@ Returns full detail for a single transaction including all scoring layers, trigg
 
 ```bash
 curl https://monitor.agregartech.com/api/v1/transactions/TXN-A1B2C3 \
-  -H "X-API-Key: your_api_key_here"
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 <ResponseExample>
@@ -167,7 +171,7 @@ Downloads a CSV of transactions matching the same query parameters as the list e
 
 ```bash
 curl "https://monitor.agregartech.com/api/v1/export/transactions?start_date=2026-06-01&decision=FLAG" \
-  -H "X-API-Key: your_api_key_here" \
+  -H "Authorization: Bearer $TOKEN" \
   -o transactions.csv
 ```
 

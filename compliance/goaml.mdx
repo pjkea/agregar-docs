@@ -56,18 +56,20 @@ On approval, the STR is marked `FILED` and a goAML XML snapshot is captured.
 
 ## Retrieve goAML XML
 
+These are token-only — an API key returns `401`. See [Authentication](/authentication).
+
 ```bash
 # STR XML
 curl https://monitor.agregartech.com/api/v1/str-reports/{report_id}/goaml-xml \
-  -H "X-API-Key: your_api_key_here"
+  -H "Authorization: Bearer $TOKEN"
 
 # CTR XML
 curl https://monitor.agregartech.com/api/v1/ctr-reports/{report_id}/goaml-xml \
-  -H "X-API-Key: your_api_key_here"
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 <Warning>
-  If you receive `409 goAML XML was not captured for this filing`, structured JSON data is still available via `GET /filings/{id}`. Only the XML snapshot is missing (filings created before Phase 6).
+  A small number of historical filings predate XML snapshotting. If you receive `409 goAML XML was not captured for this filing`, the structured data is still available via `GET /filings/{id}` — only the XML snapshot is absent. Filings you create will always have one.
 </Warning>
 
 ---

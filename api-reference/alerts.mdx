@@ -114,7 +114,7 @@ curl -X POST https://monitor.agregartech.com/api/v1/alerts/ALT-001234/resolve \
 | `ESCALATED` | Referred to senior analyst or compliance team |
 
 <Note>
-  Resolving an alert as `FALSE_POSITIVE` or `TRUE_POSITIVE` feeds the XGBoost and River ARF self-learning pipeline. Resolution quality directly improves future model accuracy.
+  Resolving an alert as `FALSE_POSITIVE` or `TRUE_POSITIVE` feeds the self-learning model. Resolution quality directly improves future accuracy, so it is worth resolving accurately rather than in bulk.
 </Note>
 
 ---

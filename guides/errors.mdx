@@ -231,12 +231,14 @@ Retry strategy: exponential back-off starting at 1s, max 4 attempts.
 
 The API degrades gracefully when internal services are unavailable:
 
-| Dependency | Behaviour when unavailable |
+| If this is degraded | What you see |
 |---|---|
-| Kafka | Transactions are saved; AML scoring falls back to synchronous |
-| Redis / Celery | Background tasks queue locally and catch up on recovery |
-| Sanctions screening | Ingestion proceeds; result marked `UNAVAILABLE` |
-| ML scoring | Rule-based scoring continues; ML score is omitted |
+| Event streaming | Transactions are still saved; scoring runs inline instead |
+| Background processing | Work is queued and catches up once service resumes |
+| Screening | Ingestion proceeds; the screening result is marked `UNAVAILABLE` |
+| ML scoring | Rule-based scoring continues; the ML component is omitted |
+
+Your transaction is not lost in any of these cases.
 
 Retry after 5–10 seconds. If the error persists beyond 2 minutes, contact support with the `request_id`.
 
