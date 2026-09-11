@@ -1,0 +1,69 @@
+---
+title: Sandbox
+description: "Test against the real engine without touching production"
+---
+
+Sandbox is a test mode for an entire institution. Your traffic runs through the **real** decision engine — the same rules, scoring, alerts and cases you get in production — but none of it reaches your live reporting, a regulator, or the fraud model. It is where you build and rehearse an integration before going live.
+
+---
+
+## Enabling it
+
+Sandbox is set per institution by Agregar. Ask [support](mailto:support@agregartech.com) to provision a test institution (or put an existing one into test mode). Once enabled, **every** request authenticated to that institution is sandbox — there is no per-request flag to remember and no separate base URL, so you cannot accidentally mix test and live traffic.
+
+You use the same endpoints and the same credentials (API key or Bearer token) as production. Nothing about your calls changes.
+
+---
+
+## What sandbox does
+
+<Note>
+  Sandbox runs the full pipeline and **persists** — so you get real `TXN-…`, `ALT-…` and case IDs to integrate against, and you read them back the usual way.
+</Note>
+
+- **Ingest** with your API key exactly as in production. A flagged payment raises a real alert; a device-farming ring opens a real FRAUD case; a large cash movement drafts a real CTR.
+- **Read back** with your Bearer token (`GET /alerts`, `GET /cases`, `GET /transactions`, `GET /str-reports`, `GET /ctr-reports`). Your sandbox data is visible to your own console like any other.
+- **File** an STR end to end. The report and its goAML XML are generated and stored so you can inspect them — but a sandbox filing is **never transmitted to a regulator**.
+
+## What sandbox never does
+
+- It is **excluded** from every cross-institution and regulator view, and from platform analytics.
+- It **never trains** the fraud model — resolving a sandbox alert as fraud produces no training label.
+- It sends **no outbound notifications** — no emails, and no webhooks, fire for sandbox activity (regulator report webhooks included).
+
+<Warning>
+  Because webhooks do not fire in sandbox, observe results by **reading them back** with a Bearer token, not by waiting for a push. Register and test your webhook endpoint against a production institution.
+</Warning>
+
+---
+
+## Reset your test data
+
+Wipe everything sandbox has accumulated and start from a clean slate:
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/sandbox/reset \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "reset": true,
+  "institution_id": "8ed79ff0-0f9e-4ac6-adf8-c6efc58abbd1",
+  "deleted": {
+    "investigation_notes": 1,
+    "device_events": 4,
+    "filing_snapshots": 0,
+    "str_reports": 0,
+    "ctr_reports": 0,
+    "cases": 2,
+    "alerts": 5,
+    "transactions": 6
+  },
+  "total_deleted": 18
+}
+```
+
+- Deletes the sandbox transactions, alerts, cases (with their notes and links), and STR/CTR reports for your institution. Reference data — customers and device fingerprints — is kept, and is reused when you ingest again.
+- Requires an admin token (`CLIENT_ADMIN`). It is idempotent: running it on an already-clean sandbox returns `total_deleted: 0`.
+- It only ever touches sandbox rows. Calling it from a non-sandbox institution returns `403` — there is no way to delete production data with it.

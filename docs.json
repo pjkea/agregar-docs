@@ -43,6 +43,7 @@
             "pages": [
               "guides/ingestion",
               "guides/webhooks",
+              "guides/sandbox",
               "guides/errors"
             ]
           },
