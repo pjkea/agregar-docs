@@ -174,5 +174,5 @@ If the `customer_id` has not been seen before, the system creates a customer rec
 | `transaction_type 'X' is invalid` | Wrong casing | Use `Deposit`, `Transfer`, `Withdrawal` exactly |
 | `channel 'Online' is invalid` | Invalid value | Valid: `ATM`, `Bank`, `Card`, `Momo`, `Agent` |
 | `customer_id is invalid` | Special characters | Only alphanumeric, `-`, `_` allowed |
-| `queued_for_processing: false` | Celery worker down | Contact Agregar support |
+| `queued_for_processing: false` | Processing backlog on our side | Retry; if it persists, contact Agregar support |
 | Batch returns `207` | Some rows failed | Check `failed_items[].errors` |

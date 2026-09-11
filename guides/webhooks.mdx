@@ -21,11 +21,11 @@ curl -X POST https://monitor.agregartech.com/api/v1/webhooks/endpoints \
 
 ```json
 {
-  "id": "6e1a1542-eb16-4721-8c66-3f81ee10389d",
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "url": "https://your-system.example.com/validar-hook",
   "events": ["TRANSACTION_SCORED", "ALERT_GENERATED"],
   "is_active": true,
-  "secret": "4ca15b7fecddc2590ec44c5b178249a5..."
+  "secret": "whsec_EXAMPLE_ONLY_your_real_secret_is_64_hex_chars"
 }
 ```
 
@@ -68,8 +68,8 @@ The body is the same envelope for every event, with an event-specific `data`:
   "event": "ALERT_GENERATED",
   "timestamp": "2026-09-11T09:30:00Z",
   "data": {
-    "alert_id": "ALT-931009009142",
-    "transaction_id": "TXN-DACB711B5551",
+    "alert_id": "ALT-A1B2C3D4E5F6",
+    "transaction_id": "TXN-A1B2C3D4E5F6",
     "customer_id": "CUST001",
     "risk_score": 185,
     "priority": "IMMEDIATE",
