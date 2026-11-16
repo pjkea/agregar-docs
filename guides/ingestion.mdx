@@ -14,7 +14,7 @@ The ingestion API is the entry point for all transactions. Every submitted trans
 | File upload | `POST /ingestion/upload` | CSV, JSONL, JSON array, or Excel end-of-day reports |
 | Validate only | `POST /ingestion/validate` | Testing payload shape without saving |
 | Batch status | `GET /ingestion/batch/{batch_id}/status` | Poll progress of a batch or file upload |
-| Health check | `GET /ingestion/health` | Confirm the ingestion subsystem (DB, Celery) is up |
+| Health check | `GET /ingestion/health` | Confirm the ingestion subsystem is up |
 
 ---
 
@@ -62,7 +62,7 @@ If you submit the same `transaction_id` twice, the response is `200` with `is_du
 
 ### Response fields
 
-Every response — fresh, duplicate, sync, or async — can carry these verdict fields. On an async submission (`process_immediately` omitted or `false`), they stay `null`/`false` until Celery finishes scoring; poll `GET /transactions/{transaction_id}` to read the scored result.
+Every response — fresh, duplicate, sync, or async — can carry these verdict fields. On an async submission (`process_immediately` omitted or `false`), they stay `null`/`false` until the background scoring pipeline finishes; poll `GET /transactions/{transaction_id}` to read the scored result.
 
 | Field | Type | Description |
 |---|---|---|
@@ -383,7 +383,7 @@ curl https://monitor.agregartech.com/api/v1/ingestion/batch/BATCH-A1B2C3D4E5F6/s
 GET /ingestion/health
 ```
 
-Checks whether the ingestion subsystem's dependencies — the database and the Celery worker pool — are reachable. Useful for monitoring, not for gating traffic.
+Checks whether the ingestion subsystem's dependencies — the database and the background processing pool — are reachable. Useful for monitoring, not for gating traffic.
 
 ```json
 {
@@ -571,5 +571,5 @@ See the `travel_rule` response object under [Single transaction](#single-transac
 | `virtual_asset.direction OUTBOUND requires transaction_type Transfer` | Mismatched direction | `OUTBOUND` → `Transfer`; `INBOUND` → `Deposit` |
 | `virtual asset transfers are not accepted in batch or file ingestion` | VirtualAsset row in a batch/upload | Submit it individually via `POST /ingestion/transaction` |
 | `Virtual asset transfers require an institution-scoped caller` | Platform-level caller, no institution | Use an institution-scoped API key |
-| `queued_for_processing: false` | Celery worker down | Contact Agregar support |
+| `queued_for_processing: false` | Processing backlog on our side | Retry; if it persists, contact Agregar support |
 | Batch returns `207` | Some rows failed | Check `failed_items[].errors` |

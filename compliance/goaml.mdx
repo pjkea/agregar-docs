@@ -117,18 +117,20 @@ A **different** user from the one who requested filing must approve — this is 
 
 ## Retrieve goAML XML
 
+These are token-only — an API key returns `401`. See [Authentication](/authentication).
+
 ```bash
 # STR XML
 curl https://monitor.agregartech.com/api/v1/str-reports/{report_id}/goaml-xml \
-  -H "X-API-Key: your_api_key_here"
+  -H "Authorization: Bearer $TOKEN"
 
 # CTR XML
 curl https://monitor.agregartech.com/api/v1/ctr-reports/{report_id}/goaml-xml \
-  -H "X-API-Key: your_api_key_here"
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 <Warning>
-  If you receive `409 goAML XML was not captured for this filing`, structured JSON data is still available via `GET /filings/{id}`. Only the XML snapshot is missing (filings created before Phase 6).
+  A small number of historical filings predate XML snapshotting. If you receive `409 goAML XML was not captured for this filing`, the structured data is still available via `GET /filings/{id}` — only the XML snapshot is absent. Filings you create will always have one.
 </Warning>
 
 ---
@@ -208,7 +210,7 @@ curl https://monitor.agregartech.com/api/v1/filings/{snapshot_id}/goaml \
   -H "X-API-Key: regulator_api_key"
 ```
 
-Downloads the goAML XML exactly as generated at filing time — distinct from `GET /str-reports/{id}/goaml-xml` and `GET /ctr-reports/{id}/goaml-xml`, which regenerate from the live report. Returns `409` if no XML was captured for that filing (pre-Phase 6 records, or generation failed).
+Downloads the goAML XML exactly as generated at filing time — distinct from `GET /str-reports/{id}/goaml-xml` and `GET /ctr-reports/{id}/goaml-xml`, which regenerate from the live report. Returns `409` if no XML was captured for that filing (older filings predating XML capture, or generation failed).
 
 ```bash
 curl https://monitor.agregartech.com/api/v1/filings/analytics \
