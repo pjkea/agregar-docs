@@ -11,7 +11,10 @@ The ingestion API is the entry point for all transactions. Every submitted trans
 |---|---|---|
 | REST single | `POST /ingestion/transaction` | Real-time core banking hooks |
 | REST batch | `POST /ingestion/batch` | Bulk imports up to 1,000 rows |
+| File upload | `POST /ingestion/upload` | CSV, JSONL, JSON array, or Excel end-of-day reports |
 | Validate only | `POST /ingestion/validate` | Testing payload shape without saving |
+| Batch status | `GET /ingestion/batch/{batch_id}/status` | Poll progress of a batch or file upload |
+| Health check | `GET /ingestion/health` | Confirm the ingestion subsystem (DB, Celery) is up |
 
 ---
 
@@ -44,11 +47,95 @@ curl -X POST https://monitor.agregartech.com/api/v1/ingestion/transaction \
 }
 ```
 
-If you submit the same `transaction_id` twice, the response is `200` with `is_duplicate: true`. This is intentional — ingestion is idempotent.
+If you submit the same `transaction_id` twice, the response is `200` with `is_duplicate: true`. This is intentional — ingestion is idempotent. A duplicate response still carries the verdict fields (`combined_risk_score`, `flagged`, `alert_id`, `travel_rule`) from the original transaction once it has finished processing.
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `process_immediately` | boolean | `false` | Run the full AML pipeline synchronously and get the verdict in the same response. Use this for testing only — it adds 200–800ms latency and is not suitable for production throughput. |
+| `strict_dedup` | boolean | `false` | Disable fuzzy deduplication (Layer 2). By default, a same-customer, same-amount transaction within a 5-minute window is treated as a probable duplicate and short-circuited. Set `strict_dedup=true` if you manage retry safety via a stable `transaction_id` and need legitimate same-amount repeat transfers to be screened individually. Only exact `transaction_id` matches (Layer 1) still dedupe. |
 
 <Note>
-  Add `?process_immediately=true` to run the AML pipeline synchronously and get the result in the same response. Use this for testing only — it adds 200–800ms latency and is not suitable for production throughput.
+  `strict_dedup` is forced to `true` automatically for any `channel: "VirtualAsset"` transaction — see [Virtual asset transfers](#virtual-asset-transfers).
 </Note>
+
+### Response fields
+
+Every response — fresh, duplicate, sync, or async — can carry these verdict fields. On an async submission (`process_immediately` omitted or `false`), they stay `null`/`false` until Celery finishes scoring; poll `GET /transactions/{transaction_id}` to read the scored result.
+
+| Field | Type | Description |
+|---|---|---|
+| `success` | boolean | Whether the transaction was accepted |
+| `transaction_id` | string | The transaction's ID (yours, or server-generated) |
+| `message` | string | Human-readable status |
+| `queued_for_processing` | boolean | Whether it was queued for async scoring |
+| `is_duplicate` | boolean | `true` if this returned an existing record instead of creating one |
+| `errors` | array of strings | Present only when `success: false` |
+| `combined_risk_score` | integer or null | Populated once scoring completes |
+| `flagged` | boolean or null | Populated once scoring completes |
+| `alert_id` | string or null | Set if scoring generated an alert |
+| `processing_complete` | boolean | `true` once `combined_risk_score` has been computed |
+| `decision` | string or null | `allow`, `flag`, `step_up`, `hold`, or `block`. Only populated when `process_immediately=true` |
+| `travel_rule` | object or null | Travel Rule verdict. Only present for `channel: "VirtualAsset"` transactions — see below |
+
+**`process_immediately=true` response:**
+
+```json
+{
+  "success": true,
+  "transaction_id": "TXN-A1B2C3D4E5F6",
+  "message": "Transaction ingested successfully",
+  "queued_for_processing": true,
+  "is_duplicate": false,
+  "combined_risk_score": 38,
+  "flagged": false,
+  "alert_id": null,
+  "processing_complete": true,
+  "decision": "allow",
+  "travel_rule": null
+}
+```
+
+### The `travel_rule` object
+
+Present only when `channel` is `VirtualAsset`. It is computed synchronously at intake, so it is returned even in async mode (`process_immediately=false`) — only `aml_decision`, `pipeline_decision`, and `clear_to_broadcast` wait for the pipeline to finish.
+
+| Field | Type | Description |
+|---|---|---|
+| `record_id` | UUID | The Travel Rule record's ID |
+| `status` | string | Protocol/lifecycle status, e.g. `AWAITING_COUNTERPARTY`, `SENT`, `ACCEPTED`, `COMPLETED`, `REJECTED` |
+| `disposition` | string | `PROCEED`, `HOLD`, `BLOCK`, `SUSPEND`, `RETURN`, or `PENDING_INFO` |
+| `mode` | string | `SHADOW` (advisory only) or `ENFORCE`, from the institution's Travel Rule settings |
+| `threshold_band` | string | `ABOVE` or `BELOW` the jurisdiction's Travel Rule threshold |
+| `missing_fields` | array of strings | IVMS101/Travel Rule fields still missing |
+| `reason_codes` | array of strings | Machine-readable reasons behind the disposition |
+| `ivms_errors` | array of strings | IVMS101 payload validation errors, if any |
+| `screening_status` | string | `CLEAR`, `REVIEW`, `HIT`, or `NOT_RUN` |
+| `profile` | object | The jurisdiction Travel Rule profile this record was evaluated under |
+| `aml_decision` | string or null | Null until the transaction has been processed by the AML pipeline |
+| `pipeline_decision` | string or null | Null until processed |
+| `clear_to_broadcast` | boolean or null | Only broadcast the transfer on-chain when this is `true` and `disposition` is `PROCEED`. When `mode` is `SHADOW`, treat this as advisory, not a gate. |
+
+```json
+{
+  "travel_rule": {
+    "record_id": "7c3b1e2a-9f4d-4a1b-8e2c-1a2b3c4d5e6f",
+    "status": "AWAITING_COUNTERPARTY",
+    "disposition": "PROCEED",
+    "mode": "ENFORCE",
+    "threshold_band": "ABOVE",
+    "missing_fields": [],
+    "reason_codes": [],
+    "ivms_errors": [],
+    "screening_status": "CLEAR",
+    "profile": { "jurisdiction_code": "GH", "currency": "GHS" },
+    "aml_decision": null,
+    "pipeline_decision": null,
+    "clear_to_broadcast": null
+  }
+}
+```
 
 ---
 
@@ -107,11 +194,95 @@ If some rows fail, the status is `207 Multi-Status`. Successful rows are still s
 }
 ```
 
+<Note>
+  Batch ingestion always runs with `strict_dedup=true` on every row — fuzzy dedup is never applied in batch. Rows commit in chunks of 100: a failure partway through a batch does not roll back rows already committed in an earlier chunk. `channel: "VirtualAsset"` rows are rejected in batch (see [Virtual asset transfers](#virtual-asset-transfers)) — submit those one at a time via `POST /ingestion/transaction`. You can supply your own `batch_id` in the request body; if omitted, one is generated (`BATCH-{id}`).
+</Note>
+
+---
+
+## File upload
+
+```bash
+POST /ingestion/upload
+```
+
+Accepts a multipart file upload for end-of-day or bulk reports — CSV, JSONL, JSON array, or Excel (`.xlsx`). The file is parsed and processed synchronously using the same validation, deduplication, and persistence pipeline as batch ingestion, and returns the same `BatchIngestResponse` shape as `POST /ingestion/batch`.
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/ingestion/upload \
+  -H "X-API-Key: your_api_key_here" \
+  -F "file=@transactions.csv" \
+  -F "source_system=core_banking_eod"
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `file` | file | Required. Allowed extensions: `.csv`, `.json`, `.jsonl`, `.xlsx`. Max 50 MB |
+| `source_system` | string | Optional label for the originating system. Defaults to `file_upload` |
+
+**Response (202 Accepted):** same shape as `POST /ingestion/batch` — `total_submitted`, `successful`, `failed`, `failed_items`, `batch_id`, `message`. Poll `GET /ingestion/batch/{batch_id}/status` for progress on large files.
+
+An unsupported extension returns `415`; a file over 50 MB returns `413`; a malformed file (e.g. missing required columns) returns `400` with the reason.
+
+---
+
+## Watchlist bulk upload
+
+```bash
+POST /ingestion/upload/watchlist
+```
+
+Bulk-adds entries to an existing watchlist/PEP list from a CSV. Platform-level only — requires the `MANAGE_SANCTIONS_LISTS` permission and a platform user, since watchlists are shared across every institution.
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/ingestion/upload/watchlist \
+  -H "Authorization: Bearer your_platform_token" \
+  -F "file=@sanctions_additions.csv"
+```
+
+CSV columns: `list_name`, `value`, and optional `notes`. Entries already present in the named list are skipped, not duplicated. An unrecognized `list_name` is reported back, not silently dropped.
+
+```json
+{
+  "added": 142,
+  "skipped_duplicates": 3,
+  "failed": 1,
+  "unknown_lists": ["pep-eu"],
+  "hint": "Use GET /watchlists to see available list names"
+}
+```
+
+---
+
+## Customer profile bulk upload
+
+```bash
+POST /ingestion/upload/customers
+```
+
+Bulk-updates existing customer risk-profile fields from a CSV. This endpoint only updates customers that already exist — it never creates new ones (customers are created automatically on first transaction ingest).
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/ingestion/upload/customers \
+  -H "X-API-Key: your_api_key_here" \
+  -F "file=@kyc_refresh.csv"
+```
+
+CSV columns: `customer_id` (required) plus any subset of `is_pep`, `kyc_score`, `occupation`, `customer_type`, `customer_name`.
+
+```json
+{
+  "updated": 58,
+  "not_found": 2,
+  "failed": 0
+}
+```
+
 ---
 
 ## Validate (dry-run)
 
-Check your payload without writing anything to the database:
+Check your payload without writing anything to the database. Accepts either a single transaction object or a batch request body (`{ "transactions": [...], "source_system": "..." }`) — the response shape differs accordingly.
 
 ```bash
 curl -X POST https://monitor.agregartech.com/api/v1/ingestion/validate \
@@ -120,7 +291,110 @@ curl -X POST https://monitor.agregartech.com/api/v1/ingestion/validate \
   -d '{ ... }'
 ```
 
-Returns the same validation errors as the live endpoint but makes no writes. Use this during development.
+**Single-transaction response:**
+
+```json
+{
+  "is_valid": true,
+  "errors": [],
+  "warnings": [
+    "customer_kyc_score was not supplied. It is the largest single factor in customer risk scoring; sending it materially reduces false positives."
+  ],
+  "normalized_data": {
+    "transaction_id": "TXN-A1B2C3D4E5F6",
+    "customer_id": "CUST001",
+    "amount": 5000.00,
+    "transaction_type": "Transfer",
+    "channel": "Momo"
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `is_valid` | boolean | Whether the payload would be accepted |
+| `errors` | array of strings | Fatal validation errors — these would cause a `400` on the live endpoint |
+| `warnings` | array of strings | Non-fatal issues: the payload would still be accepted and scored, but with degraded accuracy. See triggers below |
+| `normalized_data` | object or null | The payload after type coercion, enum normalization, and `transaction_id` generation. `null` when `is_valid` is `false` |
+
+`warnings` is populated when:
+
+- `customer_type` is set to a value that isn't `Individual`, `Merchant`, or `Company` — it will be silently coerced to `Individual`
+- `customer_kyc_score` is omitted — customer risk then scores on an unknown-KYC default
+- `transaction_type` is `Transfer` or `Withdrawal` and `receiver_id` is missing — counterparty and network rules can't evaluate without it
+
+**Batch dry-run response** (when the request body is a batch): a different shape, `BatchValidationResponse` — no writes happen either way.
+
+```json
+{
+  "total": 2,
+  "valid": 1,
+  "invalid": 1,
+  "results": [
+    { "is_valid": true, "errors": [], "warnings": [] },
+    { "is_valid": false, "errors": ["channel 'Online' is invalid; must be one of: agent, atm, bank, card, momo, virtualasset"], "warnings": [] }
+  ]
+}
+```
+
+<Note>
+  The batch dry-run's per-row `results` entries only carry `is_valid` and `errors` today — `warnings` and `normalized_data` are not populated per-row in batch mode, unlike the single-transaction response.
+</Note>
+
+---
+
+## Batch status
+
+```bash
+GET /ingestion/batch/{batch_id}/status
+```
+
+Poll the status of an asynchronous batch or file upload.
+
+```bash
+curl https://monitor.agregartech.com/api/v1/ingestion/batch/BATCH-A1B2C3D4E5F6/status \
+  -H "X-API-Key: your_api_key_here"
+```
+
+```json
+{
+  "batch_id": "BATCH-A1B2C3D4E5F6",
+  "status": "completed",
+  "progress": {
+    "total": 500,
+    "processed": 500,
+    "successful": 497,
+    "failed": 3
+  },
+  "started_at": "2026-06-11T09:00:00Z",
+  "completed_at": "2026-06-11T09:00:42Z",
+  "source_system": "core_banking_eod",
+  "file_name": "transactions.csv"
+}
+```
+
+`status` is one of `pending`, `processing`, `completed`, `failed`. Returns `404` if `batch_id` is unknown. `file_name` is `null` for batches submitted via `POST /ingestion/batch` rather than a file upload.
+
+---
+
+## Ingestion health check
+
+```bash
+GET /ingestion/health
+```
+
+Checks whether the ingestion subsystem's dependencies — the database and the Celery worker pool — are reachable. Useful for monitoring, not for gating traffic.
+
+```json
+{
+  "healthy": true,
+  "checks": {
+    "database": true,
+    "celery": true
+  },
+  "timestamp": "2026-06-11T09:00:00Z"
+}
+```
 
 ---
 
@@ -134,7 +408,7 @@ Returns the same validation errors as the live endpoint but makes no writes. Use
 | `timestamp` | ISO 8601 datetime | Not in the future; not older than 90 days |
 | `amount` | decimal | Positive; max 2 decimal places; max 10,000,000 |
 | `transaction_type` | enum | `Deposit`, `Transfer`, `Withdrawal` |
-| `channel` | enum | `ATM`, `Bank`, `Card`, `Momo`, `Agent` |
+| `channel` | enum | `ATM`, `Bank`, `Card`, `Momo`, `Agent`, `VirtualAsset` |
 
 ### Optional fields
 
@@ -155,14 +429,133 @@ If the `customer_id` has not been seen before, the system creates a customer rec
 | Field | Type |
 |---|---|
 | `customer_type` | `Individual` (default), `Merchant`, or `Company` |
+| `customer_name` | string, max 255 chars |
+| `customer_email` | string, max 254 chars |
+| `customer_phone` | string, max 20 chars (E.164) |
 | `customer_kyc_score` | integer 0–100 — KYC completeness. The single biggest input to customer risk; supply it to avoid inflated false positives |
 | `customer_country` | ISO 2-letter country code |
-| `customer_occupation` | free text |
+| `customer_occupation` | free text, max 100 chars |
 | `declared_monthly_income` | decimal |
 
 <Warning>
   `customer_type` is case-sensitive and must be one of `Individual`, `Merchant`, or `Company`. `Business` is **not** a valid value — it is silently accepted but scores incorrectly.
 </Warning>
+
+### Device fingerprinting fields
+
+All optional. Supplied by a bank or MMO mobile SDK; USSD and API-only channels typically send none of these, and every rule that reads them degrades gracefully when they're absent.
+
+| Field | Type | Constraints | Notes |
+|---|---|---|---|
+| `imei` | string | max 20 chars | Hardware device ID |
+| `iccid` | string | max 24 chars | SIM card serial |
+| `imsi` | string | max 20 chars | International Mobile Subscriber Identity |
+| `msisdn` | string | max 20 chars | Mobile number on the SIM (E.164) |
+| `sim_count` | integer | — | Number of SIMs in the device |
+| `mno` | string | max 64 chars | Mobile Network Operator, e.g. `MTN`, `Vodafone` |
+| `mcc_mnc` | string | max 10 chars | MCC+MNC, e.g. `62050` |
+| `connection_type` | string | max 64 chars | `4G`, `3G`, `WiFi`, `USSD` |
+| `ip_country` | string | max 2 chars | Country from IP geolocation |
+| `os_type` | string | max 64 chars | `Android`, `iOS` |
+| `os_version` | string | max 64 chars | — |
+| `device_model` | string | max 64 chars | — |
+| `app_version` | string | max 64 chars | — |
+| `is_rooted` | boolean | — | Rooted/jailbroken device |
+| `language` | string | max 64 chars | — |
+| `timezone` | string | max 64 chars | IANA tz name |
+| `app_install_date` | string | max 32 chars | ISO date, `YYYY-MM-DD` |
+| `gps_lat` | float | — | Consent-gated GPS latitude |
+| `gps_lon` | float | — | Consent-gated GPS longitude |
+
+### Behavioral signal fields
+
+All optional. Collected by the institution from the end-customer's session (web/app) and passed through at transaction time.
+
+| Field | Type | Constraints | Notes |
+|---|---|---|---|
+| `browser_fingerprint` | string | max 128 chars | Hash of canvas/font/plugin fingerprint |
+| `screen_resolution` | string | max 32 chars | e.g. `1920x1080` |
+| `browser_type` | string | max 64 chars | e.g. `Chrome`, `Firefox`, `WebView` |
+| `fonts_hash` | string | max 128 chars | SHA-256 of sorted installed font list |
+| `typing_speed_ms` | integer | ≥ 0 | Average ms between keystrokes |
+| `paste_events` | integer | ≥ 0 | Paste event count during form fill |
+| `mouse_entropy` | float | 0.0–1.0 | 0 = no movement, 1 = human-like |
+| `session_duration_ms` | integer | ≥ 0 | Page load → submit, in ms |
+| `auto_fill_detected` | boolean | — | Browser/app auto-filled the form |
+| `click_count` | integer | ≥ 0 | Clicks before submit |
+
+### Travel Rule fields (fiat cross-border)
+
+All optional, but recommended for cross-border transfers at or above USD 1,000 equivalent (FATF Recommendation 16). These are separate from the `virtual_asset` block below, which is for `channel: "VirtualAsset"` only.
+
+| Field | Type | Constraints |
+|---|---|---|
+| `originator_name` | string | max 255 chars |
+| `originator_account` | string | max 64 chars |
+| `originator_address` | string | max 500 chars |
+| `originator_national_id` | string | max 64 chars |
+| `beneficiary_name` | string | max 255 chars |
+| `beneficiary_account` | string | max 64 chars |
+
+---
+
+## Virtual asset transfers
+
+`channel: "VirtualAsset"` is for crypto/virtual-asset transfers subject to the FATF Travel Rule (R.15/INR.15 §7(b)). It has its own validation rules on top of the standard ones:
+
+- **Requires a `virtual_asset` block.** A request with `channel: "VirtualAsset"` and no `virtual_asset` object is rejected. Conversely, a `virtual_asset` block on any other channel is rejected.
+- **`virtual_asset.direction` must match `transaction_type`.** `direction: "OUTBOUND"` requires `transaction_type: "Transfer"`; `direction: "INBOUND"` requires `transaction_type: "Deposit"`.
+- **Single-ingest only.** `channel: "VirtualAsset"` rows are rejected in `POST /ingestion/batch` and in file uploads. Submit them one at a time via `POST /ingestion/transaction`.
+- **Requires an institution-scoped caller.** A platform-level caller with no resolved institution cannot ingest a VirtualAsset transaction — it needs the institution's Travel Rule profile, enforcement mode, and counterparty register.
+- **Forces `strict_dedup=true`.** Fuzzy dedup never applies to VirtualAsset transactions, regardless of the query parameter you pass.
+
+An optional `ivms101` object can carry the full IVMS101 payload from your Travel Rule provider (Issue 1 or 2023 shape), capped at 64 KB serialized.
+
+### The `virtual_asset` block
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `direction` | enum | Yes | `OUTBOUND` or `INBOUND` |
+| `asset_symbol` | string | Yes | 1–20 chars |
+| `network` | string | Yes | 1–40 chars |
+| `counterparty_type` | enum | Yes | `VASP`, `UNHOSTED`, `UNKNOWN`, `INTERNAL` |
+| `counterparty_identification_method` | enum | No (default `NONE`) | `PROTOCOL_DISCOVERY`, `ANALYTICS_ATTRIBUTION`, `CUSTOMER_DECLARATION`, `VASP_REGISTER`, `NONE` |
+| `amount_native` | decimal | No | ≥ 0 |
+| `fx_rate` | decimal | No | > 0 |
+| `fx_source` | string | No | max 64 chars |
+| `fx_at` | ISO 8601 datetime | No | — |
+| `originator_wallet` | string | No | max 256 chars |
+| `beneficiary_wallet` | string | No | max 256 chars |
+| `wallet_memo` | string | No | max 128 chars |
+| `counterparty_vasp_id` | UUID | No | — |
+| `protocol` | string | No | max 32 chars |
+| `protocol_reference` | string | No | max 128 chars |
+| `tr_sent_at` | ISO 8601 datetime | No | — |
+| `onchain_broadcast_at` | ISO 8601 datetime | No | — |
+| `tx_hash` | string | No | max 128 chars |
+| `tx_output_index` | integer | No | ≥ 0 |
+| `analytics_risk_score` | integer | No | 0–100 |
+
+```json
+{
+  "customer_id": "CUST001",
+  "timestamp": "2026-06-11T09:30:00Z",
+  "amount": 500.00,
+  "transaction_type": "Transfer",
+  "channel": "VirtualAsset",
+  "virtual_asset": {
+    "direction": "OUTBOUND",
+    "asset_symbol": "USDT",
+    "network": "TRON",
+    "counterparty_type": "VASP",
+    "counterparty_identification_method": "VASP_REGISTER",
+    "beneficiary_wallet": "TXYZ...",
+    "tx_hash": "a1b2c3..."
+  }
+}
+```
+
+See the `travel_rule` response object under [Single transaction](#single-transaction) for the verdict this produces.
 
 ---
 
@@ -172,7 +565,11 @@ If the `customer_id` has not been seen before, the system creates a customer rec
 |---|---|---|
 | `timestamp is in the future` | Client clock drift | Sync via NTP; up to 5-min skew is allowed |
 | `transaction_type 'X' is invalid` | Wrong casing | Use `Deposit`, `Transfer`, `Withdrawal` exactly |
-| `channel 'Online' is invalid` | Invalid value | Valid: `ATM`, `Bank`, `Card`, `Momo`, `Agent` |
+| `channel 'Online' is invalid` | Invalid value | Valid: `ATM`, `Bank`, `Card`, `Momo`, `Agent`, `VirtualAsset` |
 | `customer_id is invalid` | Special characters | Only alphanumeric, `-`, `_` allowed |
+| `channel VirtualAsset requires a virtual_asset block` | Missing block | Add the `virtual_asset` object, or use a different channel |
+| `virtual_asset.direction OUTBOUND requires transaction_type Transfer` | Mismatched direction | `OUTBOUND` → `Transfer`; `INBOUND` → `Deposit` |
+| `virtual asset transfers are not accepted in batch or file ingestion` | VirtualAsset row in a batch/upload | Submit it individually via `POST /ingestion/transaction` |
+| `Virtual asset transfers require an institution-scoped caller` | Platform-level caller, no institution | Use an institution-scoped API key |
 | `queued_for_processing: false` | Celery worker down | Contact Agregar support |
 | Batch returns `207` | Some rows failed | Check `failed_items[].errors` |

@@ -15,7 +15,8 @@ curl -X POST https://monitor.agregartech.com/api/v1/webhooks/endpoints \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://your-system.example.com/validar-hook",
-    "events": ["TRANSACTION_SCORED", "ALERT_GENERATED"]
+    "events": ["TRANSACTION_SCORED", "ALERT_GENERATED"],
+    "description": "Core banking integration"
   }'
 ```
 
@@ -25,13 +26,29 @@ curl -X POST https://monitor.agregartech.com/api/v1/webhooks/endpoints \
   "url": "https://your-system.example.com/validar-hook",
   "events": ["TRANSACTION_SCORED", "ALERT_GENERATED"],
   "is_active": true,
+  "description": "Core banking integration",
+  "created_at": "2026-09-11T09:12:03Z",
   "secret": "4ca15b7fecddc2590ec44c5b178249a5..."
 }
 ```
 
+`description` is optional and only used to help you tell endpoints apart later.
+
 <Warning>
   `secret` is returned **once**, at creation. Store it now — you need it to verify signatures, and it cannot be retrieved later.
 </Warning>
+
+<Warning>
+  There is no secret-rotation endpoint. To rotate a secret, delete the endpoint and register a new one — this issues a new `id` and a new `secret`. You lose the old `id`, and you need to re-supply `events` (and `description`) on the new registration; nothing carries over.
+</Warning>
+
+---
+
+## URL requirements
+
+`url` must be a public `http://` or `https://` address. Registration and updates reject anything that resolves to a private, loopback, link-local, reserved, multicast, or unspecified address — including the `169.254.169.254` cloud metadata range — with a `422`. The hostname's DNS is resolved and **every** resolved address must be public; a hostname that resolves to a mix of public and internal IPs is rejected.
+
+The same check runs again immediately before each delivery attempt, since DNS can change between registration and send. If a previously-safe URL later resolves to an unsafe address, the delivery is not attempted at all — it shows up in your [delivery log](#when-something-is-missing) as `status: "failed"` with `response_status: 0`, and it is not retried.
 
 ---
 
@@ -40,6 +57,7 @@ curl -X POST https://monitor.agregartech.com/api/v1/webhooks/endpoints \
 | Event | Fires when |
 |---|---|
 | `TRANSACTION_SCORED` | A transaction finishes scoring |
+| `TRAVEL_RULE_DISPOSITION_CHANGED` | A Travel Rule virtual-asset record's compliance disposition changes after ingestion (a post-facto breach or a re-evaluation) |
 | `ALERT_GENERATED` | An alert is raised |
 | `CASE_CREATED` | A case is opened |
 | `CASE_ESCALATED` | A case is escalated |
@@ -47,16 +65,21 @@ curl -X POST https://monitor.agregartech.com/api/v1/webhooks/endpoints \
 | `STR_FILED` | An STR is filed |
 | `CTR_FILED` | A CTR is filed |
 
-Subscribing to an unlisted value returns `422` naming the valid set.
+Subscribing to an unlisted value returns `422` naming the valid set. The `events` array is deduplicated server-side on both registration and update, so sending the same type twice is harmless — but don't rely on the stored order matching what you sent.
+
+<Note>
+  `CASE_CREATED` is accepted as a subscription today, but nothing in the current backend dispatches it — cases opened automatically (sanctions, PEP, fraud auto-cases) or manually do not emit this event yet. Until that's wired up, use `GET /cases` to detect new cases rather than relying on this webhook.
+</Note>
 
 ---
 
 ## What you receive
 
-Every delivery is a POST with three headers:
+Every delivery is a POST with these headers:
 
 | Header | Contents |
 |---|---|
+| `Content-Type` | `application/json` |
 | `X-TMS-Signature` | `sha256=<hex digest>` |
 | `X-TMS-Event` | The event type |
 | `X-TMS-Delivery` | Unique delivery id, for idempotency |
@@ -65,20 +88,128 @@ The body is the same envelope for every event, with an event-specific `data`:
 
 ```json
 {
-  "event": "ALERT_GENERATED",
-  "timestamp": "2026-09-11T09:30:00Z",
+  "id": "evt_4f1e9c2a6b8d4a238f7a2e1c9d6b5a3f",
+  "event_type": "ALERT_GENERATED",
+  "api_version": "2026-06-15",
+  "created_at": "2026-09-11T09:30:00Z",
+  "livemode": true,
   "data": {
     "alert_id": "ALT-931009009142",
     "transaction_id": "TXN-DACB711B5551",
     "customer_id": "CUST001",
     "risk_score": 185,
     "priority": "IMMEDIATE",
-    "status": "OPEN"
+    "status": "OPEN",
+    "triggered_rules": ["VELOCITY_HIGH", "SANCTIONS_PARTIAL"],
+    "alert_url": "/api/v1/alerts/ALT-931009009142"
   }
 }
 ```
 
-Use `POST /webhooks/test` to receive a real delivery of any event type against your endpoint, so you can confirm shape and signature before going live.
+| Field | Description |
+|---|---|
+| `id` | Unique event id: `evt_` followed by 32 hex characters. Not the same as `X-TMS-Delivery` — one event can fan out to several endpoints, each with its own delivery id |
+| `event_type` | One of the event types above |
+| `api_version` | Envelope schema version, currently `2026-06-15` |
+| `created_at` | ISO 8601 UTC timestamp for when the event was generated |
+| `livemode` | Currently always `true`. Sandbox (test-mode) activity doesn't flip this to `false` — it simply never dispatches a webhook at all. See the [Sandbox guide](/guides/sandbox) |
+| `data` | Event-specific payload — see [Event payloads](#event-payloads) below |
+
+---
+
+## Event payloads
+
+`data` differs per event type. Fields are omitted rather than sent as `null` in a few places noted below.
+
+### `TRANSACTION_SCORED`
+
+| Field | Description |
+|---|---|
+| `transaction_id` | The scored transaction |
+| `customer_id` | Owning customer |
+| `timestamp` | Transaction timestamp |
+| `amount` | Transaction amount |
+| `transaction_type` | e.g. `Deposit`, `Transfer`, `Withdrawal` |
+| `channel` | e.g. `ATM`, `Bank`, `Card`, `Momo`, `Agent` |
+| `combined_risk_score` | The combined rule + ML risk score |
+| `decision` | `ALLOW`, `FLAG`, `HOLD`, or `BLOCK` |
+| `flagged` | Whether the decision flagged the transaction |
+| `alert_generated` | Whether an alert was raised as a result |
+| `alert_priority` | Priority of the generated alert, if any |
+| `alert_id` | Id of the generated (or matched) alert, if any |
+| `triggered_rules` | Rule ids that fired |
+| `ml_score` | Raw ML model score |
+| `sanctions_result` | Sanctions screening status, or `null` if screening didn't run |
+
+### `ALERT_GENERATED`
+
+| Field | Description |
+|---|---|
+| `alert_id` | The alert |
+| `priority` | `IMMEDIATE`, `BATCH`, or `REVIEW` |
+| `risk_score` | Risk score at the time the alert was raised |
+| `customer_id` | Owning customer |
+| `transaction_id` | Transaction that triggered the alert |
+| `triggered_rules` | Rule ids that fired |
+| `status` | Alert status, e.g. `OPEN` |
+| `alert_url` | Relative API path to fetch the alert, e.g. `/api/v1/alerts/ALT-...` |
+
+### `CASE_ESCALATED`
+
+| Field | Description |
+|---|---|
+| `case_id` | The case |
+| `case_status` | New status (`ESCALATED`) |
+| `from_status` | Status the case transitioned from |
+
+### `SLA_BREACH`
+
+| Field | Description |
+|---|---|
+| `case_id` | The case |
+| `case_status` | New status after the breach (cases already `OPEN` or `SAR_DRAFTED` keep that status and are just flagged in history) |
+| `from_status` | Status before the breach was detected |
+| `hours_overdue` | Hours past the case's `due_date` |
+
+### `STR_FILED`
+
+| Field | Description |
+|---|---|
+| `event_type` | `"STR_FILED"` (repeated inside `data`, same as the envelope's `event_type`) |
+| `report_type` | `"STR"` |
+| `report_id` | The STR report id, or `""` if no report row was found |
+| `filed_at` | ISO 8601 UTC timestamp of filing |
+| `case_id` | The originating case |
+| `jurisdiction_id` | Filing jurisdiction, omitted if unknown |
+| `filed_by` | User id of the approver who filed it, omitted if not available |
+| `filing_reference` | Regulator-assigned reference, omitted if not yet set |
+
+### `CTR_FILED`
+
+| Field | Description |
+|---|---|
+| `event_type` | `"CTR_FILED"` (repeated inside `data`) |
+| `report_type` | `"CTR"` |
+| `report_id` | The CTR report id |
+| `filed_at` | ISO 8601 UTC timestamp of filing |
+| `jurisdiction_id` | Filing jurisdiction, omitted if unknown |
+| `filing_reference` | Regulator-assigned reference, omitted if not yet set |
+
+CTRs file automatically in batch, so unlike `STR_FILED` there is no `case_id` or `filed_by` — no case or human filer is attached.
+
+### `TRAVEL_RULE_DISPOSITION_CHANGED`
+
+| Field | Description |
+|---|---|
+| `record_id` | The Travel Rule record |
+| `transaction_id` | Associated transaction |
+| `status` | The record's current status |
+| `previous_disposition` | Disposition before the change |
+| `disposition` | New disposition, e.g. `PROCEED`, `HOLD`, `BLOCK`, `SUSPEND`, `RETURN`, `PENDING_INFO` |
+| `reason_codes` | Reason codes attached to the new disposition |
+| `mode` | The record's enforcement mode: `SHADOW` or `ENFORCE` |
+
+Skipped entirely for sandbox records and when the disposition hasn't actually changed.
 
 ---
 
@@ -100,6 +231,47 @@ Two things that will bite you: compute the HMAC over the **raw bytes** you recei
 
 ---
 
+## Testing an endpoint
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/webhooks/test \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "ALERT_GENERATED",
+    "payload": {"alert_id": "ALT-TEST-001"},
+    "webhook_url": "https://your-system.example.com/validar-hook"
+  }'
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `event_type` | No | Defaults to `"TEST"`. Not checked against the `events` list — any string is accepted |
+| `payload` | No | Defaults to `{}`. Merged into `data` along with `"test": true` |
+| `webhook_url` | No | Where to send it. If omitted, falls back to the server's configured default webhook URL — pass your own registered `url` to test it directly |
+
+It wraps `payload` in the same envelope documented above and sends it immediately with real `X-TMS-Signature` etc. headers — not through the retry queue, and no row is written to the delivery log, so a test send never shows up under `GET /webhooks/endpoints/{id}/deliveries`.
+
+On success:
+
+```json
+{
+  "status": "sent",
+  "envelope": {
+    "id": "evt_4f1e9c2a6b8d4a238f7a2e1c9d6b5a3f",
+    "event_type": "ALERT_GENERATED",
+    "api_version": "2026-06-15",
+    "created_at": "2026-09-11T09:30:00Z",
+    "livemode": true,
+    "data": { "alert_id": "ALT-TEST-001", "test": true }
+  }
+}
+```
+
+If you pass `webhook_url`, it must pass the same [URL safety check](#url-requirements) as registration — an unsafe URL here is rejected with `400`, not `422` (this path checks explicitly rather than through request validation). If delivery fails, or no URL is configured at all (neither `webhook_url` nor a server default), the call returns `503`.
+
+---
+
 ## Delivery and retries
 
 Respond `2xx` within **10 seconds**. Anything else is a failure and is retried:
@@ -112,7 +284,7 @@ Respond `2xx` within **10 seconds**. Anything else is a failure and is retried:
 | 4 | 30 minutes |
 | 5 | 2 hours |
 
-After 5 failed attempts the delivery is marked permanently failed and is not retried.
+After 5 failed attempts the delivery is marked permanently failed and is not retried. A delivery blocked by the [URL safety check](#url-requirements) is also marked failed immediately and is never retried, since retrying won't change what the URL resolves to.
 
 Deliveries are **at-least-once**: a slow `2xx` can still be retried, so the same event may arrive twice. Deduplicate on `X-TMS-Delivery`.
 
@@ -123,11 +295,43 @@ Do your processing after responding. Acknowledge first, work second.
 ## When something is missing
 
 ```bash
-curl "https://monitor.agregartech.com/api/v1/webhooks/endpoints/{endpoint_id}/deliveries" \
+curl "https://monitor.agregartech.com/api/v1/webhooks/endpoints/{endpoint_id}/deliveries?limit=50" \
   -H "X-API-Key: $API_KEY"
 ```
 
-Shows each attempt with its response code and body, which is usually enough to tell a TLS problem from a 500 in your handler.
+`limit` defaults to `50` and can be set up to `200`. Results are newest first.
+
+```json
+[
+  {
+    "id": "a1b2c3d4-5e6f-4a1b-8c2d-1234567890ab",
+    "event_type": "ALERT_GENERATED",
+    "status": "delivered",
+    "attempt_count": 1,
+    "response_status": 200,
+    "created_at": "2026-09-11T09:30:00Z",
+    "last_attempt_at": "2026-09-11T09:30:01Z",
+    "next_retry_at": null
+  }
+]
+```
+
+| Field | Description |
+|---|---|
+| `id` | Delivery id — the same value sent as `X-TMS-Delivery` |
+| `event_type` | The event type of this delivery |
+| `status` | `pending` (queued or awaiting retry), `delivered`, or `failed` (retries exhausted, or blocked by the URL safety check) |
+| `attempt_count` | Attempts made so far, 1–5 |
+| `response_status` | HTTP status your endpoint returned, or `0` if the delivery was blocked before sending or never reached your server |
+| `created_at` | When the delivery was queued |
+| `last_attempt_at` | When the most recent attempt happened, `null` if none yet |
+| `next_retry_at` | When the next retry is scheduled, `null` if none is pending |
+
+<Note>
+  This only tells you the response **status code**, not the response body your endpoint returned — there's no `response_body` field in this list. If you need to inspect what your handler sent back, log it on your own side.
+</Note>
+
+This is usually enough to tell a TLS problem from a 500 in your handler.
 
 Webhooks are a convenience, not the system of record. Anything delivered by webhook can also be read from [`/alerts`](/api-reference/alerts) and [`/cases`](/api-reference/cases).
 
@@ -138,5 +342,23 @@ Webhooks are a convenience, not the system of record. Anything delivered by webh
 | Endpoint | Purpose |
 |---|---|
 | `GET /webhooks/endpoints` | List yours |
-| `PATCH /webhooks/endpoints/{id}` | Change URL or event list |
+| `GET /webhooks/endpoints/{id}` | Get one endpoint |
+| `PATCH /webhooks/endpoints/{id}` | Update `url`, `events`, `is_active`, or `description` — omit any field to leave it unchanged |
 | `DELETE /webhooks/endpoints/{id}` | Remove (returns `204`) |
+
+---
+
+## Receiving pushes from external systems
+
+`POST /webhooks/inbound` is a separate, inbound endpoint — it lets another system push events *into* Validar, the reverse of everything documented above. It's not part of the outbound delivery flow the rest of this page covers, and most API clients that only consume Validar's own events will never call it; it exists for platform-level integrations (for example, an upstream system forwarding events to Validar), not for a typical client's webhook consumption.
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/webhooks/inbound \
+  -H "X-Webhook-Signature: sha256=<hmac>" \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "..."}'
+```
+
+It responds `202 Accepted` with `{"status": "accepted", "event_type": "..."}` — including when the body isn't valid JSON, in which case it's still accepted and logged as raw bytes.
+
+If the server has an inbound signing secret configured, the request must carry a valid `X-Webhook-Signature: sha256=<hmac>` header (HMAC-SHA256 over the raw body, same algorithm as outbound signing) or the call is rejected with `401`. This is a **different header and a different secret** from `X-TMS-Signature` on outbound deliveries above — it isn't tied to any endpoint you registered, and it uses a single, operator-configured secret rather than a per-endpoint one.

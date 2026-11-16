@@ -28,13 +28,15 @@ KYC quality is the largest single lever on the customer layer: poor or stale KYC
 
 ## The decision
 
+The `decision` field in API responses is lowercase:
+
 | Score | Decision | What happens |
 |---|---|---|
-| 0-89 | `ALLOW` | Proceeds normally |
-| 90-119 | `FLAG` | Proceeds; alert raised for review |
-| 120-149 | `STEP_UP` | Additional verification requested before release |
-| 150-199 | `HOLD` | Held pending manual review |
-| 200-300 | `BLOCK` | Blocked |
+| 0-89 | `allow` | Proceeds normally |
+| 90-119 | `flag` | Proceeds; alert raised for review |
+| 120-149 | `step_up` | Additional verification requested before release |
+| 150-199 | `hold` | Held pending manual review |
+| 200-300 | `block` | Blocked |
 
 <Note>
   These are the Ghana (GHA) defaults. Thresholds are configurable per jurisdiction, so confirm yours before calibrating against them.
@@ -44,18 +46,52 @@ KYC quality is the largest single lever on the customer layer: poor or stale KYC
 
 ## What overrides the score
 
-Some signals do not add points — they **tighten the thresholds**, which makes a `HOLD` or `BLOCK` far more likely at the same score, and some open a case on their own.
+Some signals do not add points — they **tighten the decision thresholds**, which makes a `hold` or `block` far more likely at the same score, and some open a case on their own:
 
 | Signal | Effect |
 |---|---|
-| Sanctions hit | Strictest thresholds, typically `BLOCK`; a SANCTIONS case opens automatically |
-| PEP hit | Stricter thresholds; an AML case opens automatically |
+| Sanctions hit | Strictest thresholds; a SANCTIONS case opens automatically |
+| PEP | Customer flagged as PEP on their profile tightens thresholds; a PEP hit from screening opens an AML case automatically |
 | Adverse information hit | Stricter thresholds |
-| Cash above the CTR threshold | Stricter thresholds; a CTR is drafted automatically |
-| High-risk counterparty jurisdiction (FATF) | Adds transaction-layer points |
-| Travel Rule threshold exceeded | Originator and beneficiary fields become required |
+| High-risk country (FATF, customer or receiver country) | Stricter thresholds. The receiver country also adds transaction-layer points directly (see [The score](#the-score) above) — this is on top of the threshold tightening, not instead of it |
+| High-value transaction (amount above a jurisdiction threshold — GHS 50,000 for GHA) | Stricter thresholds. This is a decision-threshold override — it happens to share the same GHS 50,000 figure as the CTR cash threshold below for GHA, but the two are configured independently |
+| Cash above the CTR threshold | Does not itself tighten decision thresholds; a CTR report is auto-generated for filing (see [CTR thresholds](/compliance/goaml#ctr-thresholds)) |
+| IP reputation HIGH or CRITICAL (fraud score, Tor/datacenter detection) | Stricter thresholds; CRITICAL is tighter than HIGH |
 
-Sanctions, PEP and adverse signals come from the [screening service](/compliance/sanctions), not from a fixed score bump.
+Sanctions, PEP and adverse signals come from the [screening service](/compliance/sanctions), not from a fixed score bump. When more than one override applies, the strictest threshold from each wins, band by band.
+
+### What floors the decision outright
+
+A few conditions force the decision to **at least** a given level, regardless of what the thresholds above would otherwise produce. A floor can only raise the decision, never lower it:
+
+| Condition | Floor |
+|---|---|
+| A critical rule fired: structuring (`R-A03`), pass-through (`R-N01`), mule account (`R-N02`), circular flow (`R-N03`), or smurfing (`R-N05`) | At least `hold` |
+| Screening API confirms a sanctions/PEP listing | At least `hold` |
+| Sanctions screening unavailable — the external screening service **and** the local fallback both failed | At least `hold`, with an `IMMEDIATE`-priority alert. A failed screening is never treated as a clear |
+| Virtual-asset transfer, Travel Rule in `ENFORCE` mode | Disposition `BLOCK`/`RETURN` floors to `block`; `HOLD`/`SUSPEND`/`PENDING_INFO` floors to `hold`; a virtual-asset transfer with no Travel Rule record at all also floors to `hold` |
+
+See [Travel Rule](#travel-rule-virtual-assets) below for the virtual-asset case.
+
+---
+
+## Travel Rule (virtual assets)
+
+Set `channel: "VirtualAsset"` at ingestion for a virtual-asset transfer, and include a `virtual_asset` block — it is required whenever the channel is `VirtualAsset`, and rejected on any other channel:
+
+| Field | Notes |
+|---|---|
+| `virtual_asset.direction` | `OUTBOUND` (requires `transaction_type: "Transfer"`) or `INBOUND` (requires `transaction_type: "Deposit"`) |
+| `virtual_asset.asset_symbol`, `virtual_asset.network` | Required |
+| `virtual_asset.counterparty_type` | Required |
+| `virtual_asset.originator_wallet`, `virtual_asset.beneficiary_wallet` | Wallet addresses |
+| `virtual_asset.amount_native`, `fx_rate`, `fx_source`, `fx_at` | Native-asset amount and the FX conversion used |
+
+Alongside the `virtual_asset` block, these top-level fields carry the FATF Travel Rule originator/beneficiary data and the IVMS101 payload from your Travel Rule provider:
+
+`originator_name`, `originator_account`, `originator_address`, `originator_national_id`, `beneficiary_name`, `beneficiary_account`, `ivms101`
+
+None of these are rejected if missing, but incomplete data is tracked: the synchronous verdict returned at ingestion (`travel_rule` on the ingest response) includes a `missing_fields` list, and in `ENFORCE` mode a Travel Rule record that is missing required data, or missing altogether, floors the decision to at least `hold` — see [floors the decision outright](#what-floors-the-decision-outright) above.
 
 ---
 
@@ -72,7 +108,14 @@ Every alert lists exactly which rules fired and what each contributed, so a scor
 
 ## Device signals are optional, and they matter
 
-`device_id`, `iccid`, `imei` and `is_rooted` are optional. Rules degrade gracefully without them, which is why USSD payments still score. But the behavioural layer is substantially weaker without device data, and in practice it is often the dominant contributor. Send it where you have it.
+`device_id` and `geo_location` aside, the ingestion payload accepts a much larger set of optional device, network and behavioural fields that the rule engine consumes when present:
+
+- **Device/SIM** — `imei`, `iccid`, `imsi`, `msisdn`, `sim_count`, `mno`, `mcc_mnc`, `is_rooted`, `device_model`, `os_type`, `os_version`, `app_version`
+- **Network/connection** — `connection_type`, `ip_country`
+- **Session environment** — `language`, `timezone`, `app_install_date`, `gps_lat`, `gps_lon` (consent-gated)
+- **Browser/behavioural** — `browser_fingerprint`, `browser_type`, `screen_resolution`, `fonts_hash`, `typing_speed_ms`, `paste_events`, `mouse_entropy`, `session_duration_ms`, `auto_fill_detected`, `click_count`
+
+All of these are optional, and rules degrade gracefully without them, which is why USSD payments still score. But the behavioural layer is substantially weaker without device data, and in practice it is often the dominant contributor. Send what you have.
 
 ---
 

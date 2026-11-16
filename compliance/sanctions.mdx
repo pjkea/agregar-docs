@@ -6,7 +6,7 @@ icon: "shield-halved"
 
 ## What happens
 
-Every transaction is screened against sanctions, PEP and adverse-information sources. Screening runs on a dedicated service, not on this API, so there is no endpoint for you to call — it happens as part of ingestion.
+Every transaction is screened against sanctions, PEP and adverse-information sources as part of ingestion — you do not need to call anything for this to happen. That automatic screening normally goes through a dedicated external screening service; if that service is unreachable, screening falls back to the same local name-matching engine documented below under [On-demand screening](#on-demand-screening).
 
 | Signal | Source |
 |---|---|
@@ -22,13 +22,14 @@ Every transaction is screened against sanctions, PEP and adverse-information sou
 
 ## How a hit affects the decision
 
-A hit does **not** add points to the risk score. It **tightens the decision thresholds** for that transaction, which makes a `HOLD` or `BLOCK` far more likely at the same score:
+A hit does **not** add points to the risk score. It **tightens the decision thresholds** for that transaction, which makes a `hold` or `block` far more likely at the same score:
 
 | Hit | Effect |
 |---|---|
-| Sanctions | Strictest thresholds, typically `BLOCK`; a SANCTIONS case opens automatically |
+| Sanctions (confirmed listing) | Strictest thresholds; floored to at least `hold`; a SANCTIONS case opens automatically |
 | PEP | Stricter thresholds; an AML case opens automatically |
 | Adverse information | Stricter thresholds |
+| Screening unavailable (external service **and** local fallback both failed) | Floored to at least `hold`, with an `IMMEDIATE`-priority alert — a failed screening is never treated as a clear |
 
 See [Scoring and decisions](/concepts/scoring).
 
@@ -67,6 +68,79 @@ Matching is fuzzy, because sanctions lists and your customer records rarely agre
 | < 80 | Clear |
 
 Expect false positives in the review band. That is deliberate: in screening, a missed match costs far more than an extra review.
+
+---
+
+## On-demand screening
+
+You can also screen a name directly, outside the transaction pipeline — useful for KYC/onboarding checks before a customer transacts, or for sweeping an existing customer base against newly loaded lists. These call the same local name-matching engine that backs the automatic fallback above.
+
+<Note>
+  These endpoints require a Bearer token with the `manage_sanctions_lists` permission. API keys are not accepted.
+</Note>
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /sanctions/screen` | Screen a single name |
+| `POST /sanctions/screen/batch` | Screen up to 100 names in one call |
+| `GET /sanctions/status` | Cache status — entries loaded, lists loaded, current thresholds |
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/sanctions/screen \
+  -H "Authorization: Bearer eyJ..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "John Smith",
+    "nationality": "GH",
+    "id_number": "G1234567",
+    "limit_lists": ["OFAC_SDN"]
+  }'
+```
+
+`nationality` (ISO 3166-1 alpha-2), `id_number` and `limit_lists` are optional. `limit_lists`, when set, restricts matching to those named lists only.
+
+```json
+{
+  "query_name": "John Smith",
+  "query_normalized": "john smith",
+  "recommendation": "REVIEW",
+  "highest_score": 87.5,
+  "candidates": [
+    {
+      "list_name": "OFAC_SDN",
+      "list_type": "SANCTIONS",
+      "matched_name": "John Smyth",
+      "entry_value": "SDN-00412",
+      "score": 87.5,
+      "match_type": "fuzzy",
+      "entry_metadata": {}
+    }
+  ],
+  "screened_lists": ["OFAC_SDN", "EU_SANCTIONS", "LOCAL_PEP_GHANA"],
+  "total_names_checked": 48213,
+  "screening_duration_ms": 12.4,
+  "screened_at": "2026-11-16T10:02:11Z"
+}
+```
+
+`recommendation` is `CLEAR`, `REVIEW` or `MATCH` — the same bands as the table above. `POST /sanctions/screen/batch` takes `{"names": [...]}` (max 100 entries, each shaped like the single-screen request) and returns a JSON array of results in the same shape, one per name.
+
+```bash
+curl https://monitor.agregartech.com/api/v1/sanctions/status \
+  -H "Authorization: Bearer eyJ..."
+```
+
+```json
+{
+  "loaded": true,
+  "total_name_entries": 48213,
+  "loaded_lists": ["OFAC_SDN", "EU_SANCTIONS", "UN_SC", "LOCAL_PEP_GHANA"],
+  "thresholds": {
+    "match": 95.0,
+    "review": 80.0
+  }
+}
+```
 
 ---
 

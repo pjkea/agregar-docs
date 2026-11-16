@@ -24,6 +24,7 @@ You use the same endpoints and the same credentials (API key or Bearer token) as
 - **Ingest** with your API key exactly as in production. A flagged payment raises a real alert; a device-farming ring opens a real FRAUD case; a large cash movement drafts a real CTR.
 - **Read back** with your Bearer token (`GET /alerts`, `GET /cases`, `GET /transactions`, `GET /str-reports`, `GET /ctr-reports`). Your sandbox data is visible to your own console like any other.
 - **File** an STR end to end. The report and its goAML XML are generated and stored so you can inspect them — but a sandbox filing is **never transmitted to a regulator**.
+- **Simulate** KYC document verification. A sandbox verification session never reaches the real document-verification provider — it is faked deterministically and always comes back `VERIFIED`. This exercises your own integration (submitting images, polling/reading back the verification status, the downstream customer KYC fields) end to end, but it does not exercise the provider's actual pass/fail/review logic. Don't use sandbox to test how your integration handles a `FAILED` or `REVIEW` verification outcome — it can't produce one.
 
 ## What sandbox never does
 

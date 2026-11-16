@@ -14,23 +14,27 @@ Returns a paginated list of transactions for your institution.
 
 ### Query parameters
 
+The dataset contains 1.7M+ transactions — always paginate.
+
 | Parameter | Type | Description |
 |---|---|---|
+| `customer_id` | string | Filter by customer ID |
+| `flagged` | boolean | Filter by flagged status |
+| `start_date` | ISO 8601 | Filter: transaction timestamp on or after this datetime |
+| `end_date` | ISO 8601 | Filter: transaction timestamp on or before this datetime |
+| `transaction_type` | string | `Deposit`, `Transfer`, or `Withdrawal` |
+| `channel` | string | `ATM`, `Bank`, `Card`, `Momo`, `Agent`, or `VirtualAsset` |
 | `page` | integer | Page number (default: 1) |
-| `page_size` | integer | Results per page (default: 50, max: 200) |
-| `start_date` | ISO 8601 | Filter: created at or after |
-| `end_date` | ISO 8601 | Filter: created before |
-| `decision` | string | `ALLOW`, `FLAG`, `STEP_UP`, `HOLD`, `BLOCK` |
-| `customer_id` | UUID | Filter by customer |
-| `channel` | string | `Bank`, `Card`, `ATM`, `Momo`, `Agent` |
-| `min_amount` | number | Minimum transaction amount |
-| `max_amount` | number | Maximum transaction amount |
-| `min_score` | integer | Minimum combined risk score |
+| `page_size` | integer | Results per page (default: 20, max: 100) |
+
+<Warning>
+  `decision`, `min_amount`, `max_amount`, and `min_score` are **not** supported query parameters on this endpoint. An unknown query parameter is silently ignored rather than rejected, so passing one does not filter anything and does not error — it just returns the unfiltered page. Filter by score or decision client-side, or via [Alerts](/api-reference/alerts), which carries the score and decision band per alert.
+</Warning>
 
 ### Example
 
 ```bash
-curl "https://monitor.agregartech.com/api/v1/transactions?decision=FLAG&min_score=90&page_size=25" \
+curl "https://monitor.agregartech.com/api/v1/transactions?flagged=true&page_size=25" \
   -H "X-API-Key: your_api_key_here"
 ```
 
@@ -44,13 +48,15 @@ curl "https://monitor.agregartech.com/api/v1/transactions?decision=FLAG&min_scor
     {
       "transaction_id": "TXN-A1B2C3",
       "customer_id": "CUST-001",
+      "timestamp": "2026-06-11T14:22:00Z",
       "amount": 12500.00,
-      "currency": "GHS",
-      "transaction_type": "TRANSFER",
-      "channel": "MOBILE",
+      "transaction_type": "Transfer",
+      "channel": "Momo",
+      "flow_type": "Wallet-Account",
+      "receiver_id": "CUST-002",
+      "receiver_country": "GH",
       "combined_risk_score": 112,
-      "decision": "FLAG",
-      "created_at": "2026-06-11T14:22:00Z"
+      "flagged": true
     }
   ]
 }
@@ -65,7 +71,7 @@ curl "https://monitor.agregartech.com/api/v1/transactions?decision=FLAG&min_scor
 GET /api/v1/transactions/{transaction_id}
 ```
 
-Returns full detail for a single transaction including all scoring layers, triggered rules, and ML explanation.
+Returns full detail for a single transaction, including every risk-score layer and its Travel Rule summary.
 
 ```bash
 curl https://monitor.agregartech.com/api/v1/transactions/TXN-A1B2C3 \
@@ -77,38 +83,50 @@ curl https://monitor.agregartech.com/api/v1/transactions/TXN-A1B2C3 \
 {
   "transaction_id": "TXN-A1B2C3",
   "customer_id": "CUST-001",
+  "timestamp": "2026-06-11T14:22:00Z",
   "amount": 12500.00,
-  "currency": "GHS",
-  "transaction_type": "TRANSFER",
-  "channel": "MOBILE",
-  "sender_account": "0241234567",
-  "receiver_account": "0209876543",
-  "receiver_name": "John Appiah",
-  "combined_risk_score": 112,
+  "transaction_type": "Transfer",
+  "channel": "Momo",
+  "flow_type": "Wallet-Account",
+  "receiver_id": "CUST-002",
+  "receiver_country": "GH",
+  "device_id": "DEV-9f3a1c",
+  "geo_location": "5.6037,-0.1870",
   "customer_risk_score": 45,
   "transaction_risk_score": 42,
   "behavioral_risk_score": 25,
-  "decision": "FLAG",
-  "triggered_rules": ["R-V01", "R-A05"],
-  "risk_factors": [
-    "Transaction count spike — 11 transfers in last hour",
-    "Amount 2.8σ above 30-day mean"
-  ],
-  "ml_score": 0.79,
-  "model_used": "ensemble",
-  "ml_explanation": {
-    "top_features": [
-      {"feature": "velocity_spike_flag", "shap_value": 0.28},
-      {"feature": "amount_zscore", "shap_value": 0.21},
-      {"feature": "transaction_count_1h", "shap_value": 0.17}
-    ]
-  },
+  "combined_risk_score": 112,
+  "flagged": true,
   "alert_id": "ALT-001234",
-  "created_at": "2026-06-11T14:22:00Z",
-  "processed_at": "2026-06-11T14:22:01Z"
+  "travel_rule": null,
+  "created_at": "2026-06-11T14:22:00Z"
 }
 ```
 </ResponseExample>
+
+| Field | Type | Description |
+|---|---|---|
+| `transaction_id` | string | — |
+| `customer_id` | string | — |
+| `timestamp` | ISO 8601 datetime | When the transaction occurred |
+| `amount` | decimal | — |
+| `transaction_type` | string | `Deposit`, `Transfer`, or `Withdrawal` |
+| `channel` | string | `ATM`, `Bank`, `Card`, `Momo`, `Agent`, or `VirtualAsset` |
+| `flow_type` | string or null | `Cash_In`, `Cash_Out`, `Wallet-Account`, `Account-Wallet` |
+| `receiver_id` | string or null | — |
+| `receiver_country` | string or null | ISO 3166-1 alpha-2 |
+| `device_id` | string or null | — |
+| `geo_location` | string or null | — |
+| `customer_risk_score` | integer | — |
+| `transaction_risk_score` | integer | — |
+| `behavioral_risk_score` | integer | — |
+| `combined_risk_score` | integer | — |
+| `flagged` | boolean | — |
+| `alert_id` | string or null | Set if this transaction generated an alert |
+| `travel_rule` | object or null | Travel Rule verdict summary, for `VirtualAsset` transfers or fiat R.16 checks. Contains no PII |
+| `created_at` | ISO 8601 datetime | When the record was written |
+
+For which model version scored a transaction, see [`GET /transactions/{id}/model-provenance`](#model-provenance) below.
 
 ---
 
@@ -120,40 +138,206 @@ GET /api/v1/transactions/{transaction_id}/timeline
 
 Returns the processing events for a single transaction in chronological order.
 
+```bash
+curl https://monitor.agregartech.com/api/v1/transactions/TXN-A1B2C3/timeline \
+  -H "X-API-Key: your_api_key_here"
+```
+
 <ResponseExample>
 ```json
 {
   "transaction_id": "TXN-A1B2C3",
   "events": [
     {
-      "timestamp": "2026-06-11T14:22:00.001Z",
-      "event": "RECEIVED",
-      "detail": "Transaction ingested via REST"
-    },
-    {
-      "timestamp": "2026-06-11T14:22:00.120Z",
-      "event": "ENRICHED",
-      "detail": "Customer context and 30d baseline loaded"
+      "timestamp": "2026-06-11T14:22:00.000Z",
+      "event_type": "transaction_created",
+      "description": "Transaction received and recorded",
+      "actor": "system",
+      "metadata": {
+        "amount": 12500.00,
+        "channel": "Momo",
+        "type": "Transfer"
+      }
     },
     {
       "timestamp": "2026-06-11T14:22:00.250Z",
-      "event": "SCORED",
-      "detail": "combined_risk_score=112"
+      "event_type": "Transaction scored",
+      "description": "Transaction scored with combined risk score of 112",
+      "actor": "system",
+      "metadata": { "combined_risk_score": 112 }
     },
     {
       "timestamp": "2026-06-11T14:22:00.310Z",
-      "event": "DECIDED",
-      "detail": "FLAG — rules: R-V01, R-A05"
+      "event_type": "Rule triggered",
+      "description": "Rule R-V01 triggered",
+      "actor": "system",
+      "metadata": { "rule_id": "R-V01" }
     },
     {
       "timestamp": "2026-06-11T14:22:00.340Z",
-      "event": "ALERT_CREATED",
-      "detail": "ALT-001234"
+      "event_type": "Alert generated",
+      "description": "Alert generated with High priority",
+      "actor": "system",
+      "metadata": { "priority": "High" }
     }
   ]
 }
 ```
 </ResponseExample>
+
+| Field | Type | Description |
+|---|---|---|
+| `timestamp` | ISO 8601 datetime | — |
+| `event_type` | string | `transaction_created`, `Transaction scored`, `Rule triggered`, `Alert generated`, or `Baseline computed` |
+| `description` | string | Human-readable summary of the event |
+| `actor` | string | `system`, or the acting user/token for events with one |
+| `metadata` | object | Event-specific detail — contents vary by `event_type` |
+
+---
+
+## Related transactions
+
+```bash
+GET /api/v1/transactions/{transaction_id}/related
+```
+
+Finds other transactions related to this one by pattern: same receiver, similar amount (within 10%), same time window (within 1 hour), same device, or same geo-location.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `min_similarity` | number | Minimum similarity score, 0.0–1.0 (default: 0.5) |
+| `limit` | integer | Maximum related transactions to return (default: 50, max: 200) |
+
+```bash
+curl "https://monitor.agregartech.com/api/v1/transactions/TXN-A1B2C3/related?min_similarity=0.3" \
+  -H "X-API-Key: your_api_key_here"
+```
+
+<ResponseExample>
+```json
+{
+  "transaction_id": "TXN-A1B2C3",
+  "related": [
+    {
+      "transaction_id": "TXN-B2C3D4",
+      "timestamp": "2026-06-11T14:05:00Z",
+      "amount": 12000.00,
+      "transaction_type": "Transfer",
+      "relationship_type": "same_receiver, similar_amount",
+      "similarity_score": 0.5
+    }
+  ],
+  "total": 1
+}
+```
+</ResponseExample>
+
+`relationship_type` is a comma-separated combination of `same_receiver`, `similar_amount`, `same_time_window`, `same_device`, and `same_location` — whichever matched. `similarity_score` is the sum of each matched relationship's weight.
+
+---
+
+## Model provenance
+
+```bash
+GET /api/v1/transactions/{transaction_id}/model-provenance
+```
+
+Which ML model version (and artifact hash) scored this transaction — useful when investigating a decision after a model has since been promoted or rolled back.
+
+```bash
+curl https://monitor.agregartech.com/api/v1/transactions/TXN-A1B2C3/model-provenance \
+  -H "X-API-Key: your_api_key_here"
+```
+
+<ResponseExample>
+```json
+{
+  "transaction_id": "TXN-A1B2C3",
+  "scored_at": "2026-06-11T14:22:00.250Z",
+  "decision": "flag",
+  "combined_risk_score": 112,
+  "models": [
+    {
+      "model_type": "XGBOOST",
+      "version": 14,
+      "threshold": 0.62,
+      "sha256": "9f3a1c..."
+    }
+  ]
+}
+```
+</ResponseExample>
+
+Returns an empty `models` array (not a `404`) if the transaction hasn't been scored yet, e.g. transactions older than the audit logging itself. `sha256` is the artifact hash of the exact version that scored this transaction, which can differ from the current champion model's hash if a promotion has happened since.
+
+---
+
+## Live transaction feed (polling)
+
+```bash
+GET /api/v1/transactions/feed
+```
+
+A polling-based alternative to fetching the list endpoint repeatedly — pass the `next_cursor` from the previous response back in as `since` to get only new transactions. Call every few seconds.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `since` | ISO 8601 datetime | Return only transactions with `timestamp` after this. Omit on the first call |
+| `limit` | integer | Maximum rows per page (default: 50, max: 200) |
+| `flagged_only` | boolean | Return only flagged transactions (default: `false`) |
+
+```bash
+curl "https://monitor.agregartech.com/api/v1/transactions/feed?limit=50" \
+  -H "X-API-Key: your_api_key_here"
+```
+
+<ResponseExample>
+```json
+{
+  "items": [
+    {
+      "transaction_id": "TXN-A1B2C3",
+      "customer_id": "CUST-001",
+      "timestamp": "2026-06-11T14:22:00Z",
+      "amount": 12500.00,
+      "transaction_type": "Transfer",
+      "channel": "Momo",
+      "combined_risk_score": 112,
+      "flagged": true
+    }
+  ],
+  "count": 1,
+  "next_cursor": "2026-06-11T14:22:00Z"
+}
+```
+</ResponseExample>
+
+When `count` is less than `limit`, you're caught up — wait before polling again. Pass the response's `next_cursor` as `since` on the next call.
+
+---
+
+## Live transaction stream (SSE)
+
+```bash
+GET /api/v1/transactions/stream
+```
+
+A push-based alternative to `/feed`: a Server-Sent Events stream that emits each transaction the moment it's scored. Institution-scoped callers only see their own institution's transactions; platform users see everything.
+
+```bash
+curl -N "https://monitor.agregartech.com/api/v1/transactions/stream" \
+  -H "X-API-Key: your_api_key_here"
+```
+
+```
+data: {"transaction_id": "TXN-A1B2C3", "combined_risk_score": 112, "flagged": true, ...}
+
+: ping
+
+data: {"transaction_id": "TXN-B2C3D4", "combined_risk_score": 8, "flagged": false, ...}
+```
+
+A `: ping` comment line is sent roughly every 15 seconds when there's no new transaction, to keep the connection alive through proxies. The stream closes when the client disconnects.
 
 ---
 
@@ -163,10 +347,10 @@ Returns the processing events for a single transaction in chronological order.
 GET /api/v1/export/transactions
 ```
 
-Downloads a CSV of transactions matching the same query parameters as the list endpoint.
+Downloads a CSV of transactions matching the same filters as the list endpoint (`customer_id`, `flagged`, `start_date`, `end_date`, `transaction_type`, `channel` — no pagination params, since export returns every matching row up to the cap).
 
 ```bash
-curl "https://monitor.agregartech.com/api/v1/export/transactions?start_date=2026-06-01&decision=FLAG" \
+curl "https://monitor.agregartech.com/api/v1/export/transactions?start_date=2026-06-01&flagged=true" \
   -H "X-API-Key: your_api_key_here" \
   -o transactions.csv
 ```
