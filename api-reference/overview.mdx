@@ -52,11 +52,13 @@ See [Alerts](/api-reference/alerts) and [Transactions](/api-reference/transactio
 
 | Endpoint | Auth | Purpose |
 |---|:---:|---|
-| `PATCH /alerts/{alert_id}` | T | Update status or priority |
+| `PATCH /alerts/{alert_id}` | T | Update status or assignment |
 | `POST /alerts/{alert_id}/assign` | T | Assign to an analyst |
+| `POST /alerts/{alert_id}/claim` | T | Self-assign an unassigned alert |
 | `POST /alerts/{alert_id}/resolve` | T | Close it, with a reason |
 | `POST /alerts/{alert_id}/escalate` | T | Escalate into a case |
 | `POST /alerts/{alert_id}/notes` | T | Add a note |
+| `POST /alerts/{alert_id}/request-verification` | T | Send a KYC verification link for the alert's customer |
 
 ---
 
@@ -65,13 +67,25 @@ See [Alerts](/api-reference/alerts) and [Transactions](/api-reference/transactio
 | Endpoint | Auth | Purpose |
 |---|:---:|---|
 | `GET /cases` | T | List cases |
+| `GET /cases/metrics` | T | Aggregate case metrics |
 | `GET /cases/{case_id}` | T | One case |
 | `POST /cases` | T | Open a case |
+| `GET /cases/{case_id}/graph` | T | Entity network for a case |
+| `GET /cases/{case_id}/device-history` | T | Devices seen across the case's alerts |
+| `GET /cases/{case_id}/transaction-chain` | T | Sender→receiver transaction network |
 | `PATCH /cases/{case_id}/status` | T | Move it through the workflow |
 | `PATCH /cases/{case_id}/assign` | T | Assign it |
-| `POST /cases/{case_id}/notes` | T | Add a note |
+| `POST /cases/{case_id}/sar-filing` | T | Request SAR filing (four-eyes) |
+| `POST /approvals/{approval_id}/approve` | T | Approve a pending SAR filing (or other four-eyes action) |
 | `POST /cases/{case_id}/alerts` | T | Link another alert |
-| `POST /cases/{case_id}/sar-filing` | T | Draft an STR from the case |
+| `GET /cases/{case_id}/alerts` | T | List alerts linked to the case |
+| `DELETE /cases/{case_id}/alerts/{alert_id}` | T | Unlink an alert |
+| `POST /cases/{case_id}/request-verification` | T | Send a KYC verification link for the case's customer |
+| `POST /cases/{case_id}/attachments` | T | Upload evidence |
+| `POST /cases/{case_id}/notes` | T | Add a note |
+| `GET /cases/{case_id}/notes` | T | List notes |
+| `DELETE /cases/{case_id}/notes/{note_id}` | T | Delete a note |
+| `GET /cases/{case_id}/history` | T | Status transition history |
 
 See [Cases](/api-reference/cases).
 

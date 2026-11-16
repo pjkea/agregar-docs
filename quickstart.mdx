@@ -46,7 +46,7 @@ You need an API key. Everything below is copy-paste runnable.
     }
     ```
 
-    Required fields are `customer_id`, `timestamp`, `amount`, `transaction_type` and `channel`. Transfers also need `receiver_id`. Scoring runs asynchronously and completes in seconds, so `combined_risk_score` is `null` here.
+    Required fields are `customer_id`, `timestamp`, `amount`, `transaction_type` and `channel`. `receiver_id` is optional but recommended on Transfers and Withdrawals — without it, counterparty and network rules can't evaluate, and `POST /ingestion/validate` will warn you about it (it won't reject the transaction). Scoring runs asynchronously and completes in seconds, so `combined_risk_score` is `null` here.
   </Step>
 
   <Step title="Trigger something">

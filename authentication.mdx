@@ -30,6 +30,7 @@ Every endpoint except `GET /health` requires authentication. There are two crede
 | `GET /customers/...` | **no** | yes |
 | `GET /cases` | **no** | yes |
 | `GET /str-reports`, `GET /ctr-reports` | **no** | yes |
+| `/auth/*` (login, MFA, profile, etc.) | **no** | see below |
 
 In short: **push with an API key, read back with a token.** A typical integration uses both — the API key in your core banking system, a token in whatever your compliance team uses to review.
 
@@ -46,9 +47,95 @@ curl -X POST https://monitor.agregartech.com/api/v1/ingestion/transaction \
   -d '{ ... }'
 ```
 
-Keys are issued per institution and scoped to it: you only ever see your own data. They do not expire unless rotated or revoked. A new key's raw value is shown **once**, at creation — store it immediately.
+Keys are issued per institution and scoped to it: you only ever see your own data. A new key's raw value is shown **once**, at creation — store it immediately; it cannot be retrieved again, only rotated.
 
-Institution admins manage keys at `GET /api-keys`, `POST /api-keys`, `POST /api-keys/{key_id}/revoke` and `POST /api-keys/{key_id}/rotate`.
+Keys look like `tm_live_` followed by ~43 URL-safe base64 characters, e.g. `tm_live_Qm9uZC1KYW1lcy1Cb25k...`. Useful if you run secret-scanning on commits or logs.
+
+The `CLIENT_ADMIN` and `OPERATIONS` roles manage keys (anyone holding the `MANAGE_API_KEYS` permission — see [Roles](#roles)):
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api-keys` | Create a new key for your institution |
+| `GET /api-keys` | List your institution's keys (metadata only — never the raw key) |
+| `POST /api-keys/{id}/revoke` | Immediately and permanently revoke a key |
+| `POST /api-keys/{id}/rotate` | Issue a replacement key; the old one keeps working for a grace period |
+| `GET /api-keys/{id}/usage` | Request counts for a key (today / 7d / 30d) |
+
+### Key response shape
+
+`POST /api-keys` and `GET /api-keys` return:
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | |
+| `label` | string | The name you gave it (e.g. `"CI/CD pipeline"`) |
+| `institution_id` | UUID | |
+| `created_by_id` | UUID | The user who created the key |
+| `created_at` | datetime | |
+| `last_used_at` | datetime or `null` | Updated asynchronously, not on every single request |
+| `expires_at` | datetime or `null` | Set only while the key is mid-rotation (see below) |
+| `revoked_at` | datetime or `null` | |
+| `is_active` | boolean | `false` once revoked or past `expires_at` |
+| `key` | string | **Creation only** — the raw key. Never returned again. |
+
+```json
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "label": "CI/CD pipeline",
+  "institution_id": "8ed79ff0-0f9e-4ac6-adf8-c6efc58abbd1",
+  "created_by_id": "9c858901-8a57-4791-81fe-4c455b099bc9",
+  "created_at": "2026-11-16T09:00:00Z",
+  "last_used_at": null,
+  "expires_at": null,
+  "revoked_at": null,
+  "is_active": true,
+  "key": "tm_live_Qm9uZC1KYW1lcy1Cb25k...",
+  "message": "Store this key securely — it will not be shown again."
+}
+```
+
+### Rotating a key
+
+`POST /api-keys/{id}/rotate` does **not** cut the old key off immediately. It issues a new key and gives the old one a grace period before it stops working, so a service you haven't redeployed yet doesn't fail mid-rotation:
+
+```json
+{
+  "id": "0a2c6e3e-2222-4f1a-9a1e-111111111111",
+  "new_key": "tm_live_a1b2c3d4...",
+  "old_key_expires_at": "2026-11-17T09:00:00Z",
+  "message": "New key issued. Update your services before the old key expires at 2026-11-17T09:00:00Z."
+}
+```
+
+Both keys authenticate during the grace period — 24 hours by default (your contract may set a different value). After `old_key_expires_at`, the old key returns `401` on every request. Recommended procedure: rotate, roll out `new_key` to your services, verify, then let the old key expire on its own.
+
+### Expired vs. revoked
+
+The two cases return different `401` bodies:
+
+| Message | Cause |
+|---|---|
+| `Invalid or revoked API key` | The key doesn't exist, was typo'd, or was explicitly revoked via `POST /api-keys/{id}/revoke` |
+| `API key has expired — please rotate` | The key is a pre-rotation key past its grace-period `expires_at` |
+
+A revoked key is dead immediately and irreversibly. An expired (post-rotation) key was alive until its grace window closed — if you're still seeing this error, you're using a key that should have been replaced.
+
+### Usage stats
+
+`GET /api-keys/{id}/usage` returns request counts aggregated from daily counters:
+
+```json
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "label": "CI/CD pipeline",
+  "last_used_at": "2026-11-16T08:12:03Z",
+  "requests_today": 142,
+  "requests_7d": 988,
+  "requests_30d": 4120
+}
+```
+
+`requests_today` resets at UTC midnight; `requests_7d` and `requests_30d` are rolling totals including today.
 
 ---
 
@@ -79,7 +166,158 @@ curl "https://monitor.agregartech.com/api/v1/transactions?page=1&page_size=20" \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..."
 ```
 
-Access tokens last **30 minutes**, refresh tokens **7 days**. On `401`, exchange the refresh token at `POST /auth/refresh` rather than logging in again.
+Access tokens last **30 minutes**, refresh tokens **7 days**.
+
+### Multi-factor authentication (MFA)
+
+If MFA is enabled on the account, include the current 6-digit TOTP code in an `X-TOTP-Code` header on login:
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/auth/login \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "X-TOTP-Code: 123456" \
+  -d "username=you@example.com&password=yourpassword"
+```
+
+A login request missing the header when MFA is enabled is rejected with `401`:
+
+```json
+{ "message": "MFA required", "mfa_required": true }
+```
+
+Some institutions mandate MFA for every account. If yours does and you haven't set it up yet, login is rejected with `401` and `org_mfa_required: true` instead — set up MFA before retrying.
+
+Manage MFA on your own account with a Bearer token:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /auth/mfa/setup` | Generates a TOTP secret and an `otpauth://` URI for scanning into an authenticator app. Does **not** enable MFA yet. |
+| `POST /auth/mfa/enable` | Body: `{ "totp_code": "123456" }`. Verifies the code against the secret from `setup` and turns MFA on. |
+| `POST /auth/mfa/disable` | Body: `{ "password": "..." }`. Turns MFA off — requires your current password to confirm. |
+| `GET /auth/mfa/status` | Returns `{ "mfa_enabled": bool, "totp_configured": bool }`. |
+
+A TOTP code is accepted within one 30-second step either side of the current one, to allow for minor clock drift.
+
+### Login errors
+
+| Status | Response | Cause |
+|---|---|---|
+| `401` | `"Incorrect email or password"` | Wrong credentials |
+| `401` | `"Account disabled"` | Account deactivated by an admin |
+| `401` | `{ "mfa_required": true, ... }` | MFA is enabled on the account and `X-TOTP-Code` was omitted |
+| `401` | `"Invalid TOTP code"` | TOTP header was present but wrong or stale |
+| `401` | `{ "org_mfa_required": true, ... }` | The institution mandates MFA and this account hasn't configured it yet |
+| `403` | `"Your institution account has been suspended. Contact support@agregartech.com."` | The institution has been suspended by Agregar. This check runs on Bearer-token calls. |
+| `429` | `"Too many failed login attempts. Please try again later."` | Brute-force lockout — see below |
+
+### Brute-force lockout
+
+<Note>
+  This is separate from the per-API-key / per-institution rate limits in the [Error Reference](/guides/errors#429-too-many-requests). This one protects the login endpoint specifically, keyed on the email you're trying and the IP you're calling from — not on a credential.
+</Note>
+
+After 8 failed login attempts for the same (email, IP) pair within a 15-minute window, further attempts for that pair are rejected with `429` and a `Retry-After` header (in seconds) until the lockout clears, currently 900 seconds (15 minutes). A correct login — including supplying the right password after a few wrong tries — clears the counter immediately. A locked-out pair is rejected even with the correct password until the lockout expires.
+
+### Refreshing and rotation
+
+Refresh tokens are **single-use**. Each call to `POST /auth/refresh` revokes the refresh token you sent and issues a brand new access + refresh token pair — it does not just extend the one you already have:
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{ "refresh_token": "eyJhbGciOiJIUzI1NiIs..." }'
+```
+
+Always store the `refresh_token` from the response and discard the one you sent — reusing an already-rotated or already-revoked refresh token returns `401`:
+
+```json
+{ "detail": "Refresh token expired or revoked" }
+```
+
+On `401` from an expired access token, exchange the refresh token at `POST /auth/refresh` rather than logging in again. If the refresh token itself has expired or been revoked (including by rotation, or by logout), fall back to `POST /auth/login`.
+
+### Logging out
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{ "refresh_token": "eyJhbGciOiJIUzI1NiIs..." }'
+```
+
+Revokes that one refresh token (its session). Returns `204 No Content`. Access tokens already issued are not individually revocable — they simply expire naturally within 30 minutes.
+
+Pass `?all=true` to revoke every active session for the user, not just the one tied to the token you sent — useful for "sign out everywhere" or after a suspected credential leak:
+
+```bash
+curl -X POST "https://monitor.agregartech.com/api/v1/auth/logout?all=true" \
+  -H "Content-Type: application/json" \
+  -d '{ "refresh_token": "eyJhbGciOiJIUzI1NiIs..." }'
+```
+
+### Your profile — `GET /auth/me`
+
+Returns the authenticated user's identity, roles, and the flat union of permissions granted by those roles:
+
+```bash
+curl https://monitor.agregartech.com/api/v1/auth/me \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..."
+```
+
+```json
+{
+  "user_id": "9c858901-8a57-4791-81fe-4c455b099bc9",
+  "email": "you@example.com",
+  "full_name": "Ama Mensah",
+  "roles": ["COMPLIANCE_OFFICER"],
+  "permissions": ["file_str", "view_cases", "view_audit_trail", "..."],
+  "institution_id": "8ed79ff0-0f9e-4ac6-adf8-c6efc58abbd1",
+  "institution_name": "Example Bank",
+  "sandbox": false,
+  "va_travel_rule_mode": null
+}
+```
+
+| Field | Notes |
+|---|---|
+| `permissions` | Flat union of every action granted by every role you hold — useful for client-side UI gating. The API still enforces the real check on each endpoint; don't rely on this list alone. |
+| `sandbox` | `true` if your institution is a sandbox (test mode) tenant — see the [Sandbox guide](/guides/sandbox) |
+| `va_travel_rule_mode` | Virtual-asset Travel Rule mode for your institution (e.g. `SHADOW`, `ENFORCE`), or `null` if not applicable |
+
+### Changing your password
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/auth/change-password \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "current_password": "your-old-password",
+    "new_password": "your-new-password-12-chars-min",
+    "revoke_sessions": false
+  }'
+```
+
+Requires your current password, even though the request is already authenticated — this stops a stolen access token from silently taking over the account. Passwords must be at least **12 characters**.
+
+Set `revoke_sessions: true` to sign out every other active session (e.g. after a suspected credential leak); the session you're changing the password from stays logged in.
+
+**Errors:** `400` if the new password is under 12 characters or identical to the current one; `401` if `current_password` is wrong.
+
+### Accepting an invite
+
+`POST /auth/accept-invite` is public — no credential required. It activates an account created either by an Agregar admin approving an institution signup, or by a team invite, and sets its password:
+
+```bash
+curl -X POST https://monitor.agregartech.com/api/v1/auth/accept-invite \
+  -H "Content-Type: application/json" \
+  -d '{
+    "token": "raw-token-from-the-invite-link",
+    "new_password": "your-new-password-12-chars-min"
+  }'
+```
+
+The invite link in the email is `{FRONTEND_URL}/accept-invite?token=<raw_token>` — extract `token` from the query string and submit it here with the chosen password (minimum **12 characters**). On success the account is activated, the invite token is cleared (single-use), and you get back an access + refresh token pair immediately — no separate login step.
+
+**Errors:** `400 "Invalid or already-used invite token."` if the token doesn't match an account or has already been used; `400 "Invite link has expired. Ask an administrator to re-invite you."` if the token is past its expiry; `400` if the password is under 12 characters.
 
 ---
 
@@ -91,8 +329,13 @@ A token's role decides what it may do. An API key is not subject to roles — it
 |---|---|
 | `CLIENT_ADMIN` | Everything below, plus users and API keys |
 | `COMPLIANCE_OFFICER` | File STRs, manage cases, read everything |
+| `DPO` | Handle DSAR / data-erasure requests, approve sensitive privacy actions, read the audit trail |
 | `SENIOR_ANALYST` | Work and assign cases, file STRs |
 | `ANALYST` | Work assigned cases and the unassigned queue |
 | `AUDITOR` | Read-only, including the audit trail |
+| `OPERATIONS` | Manage API keys, view cases and analytics, read-only audit trail |
+| `READONLY` | Read-only access to outcomes, lists and labels — no case or transaction access |
+
+API keys are managed by whichever role holds `MANAGE_API_KEYS` — that's `CLIENT_ADMIN` and `OPERATIONS`, not just "institution admins" generically.
 
 `403 Permission denied` means your role lacks the permission; ask your institution admin. `401` means the credential itself was rejected — check you are using the right one for that endpoint.

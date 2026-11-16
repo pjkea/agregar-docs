@@ -3,41 +3,72 @@ title: Error Reference
 description: "Every error code with cause and fix"
 ---
 
-All errors follow a consistent JSON envelope:
+Most errors use FastAPI's default shape: a single `detail` field.
 
 ```json
 {
-  "error": {
-    "message": "Human-readable description of what went wrong",
-    "category": "validation",
-    "request_id": "550e8400-e29b-41d4-a716-446655440000",
-    "details": {}
-  }
+  "detail": "Alert already resolved"
 }
 ```
 
-| Field | Description |
-|---|---|
-| `message` | Plain-English explanation. Log this; do not surface directly to end users. |
-| `category` | Machine-readable error category |
-| `request_id` | UUID for this request — include in every support ticket |
-| `details` | Optional structured context, present on validation errors |
+This is what you'll get back for the large majority of error responses — authentication failures, permission errors, not-found, conflicts, business-logic rejections, rate limits, expired links, file-upload rejections, and more. `detail` is a plain string unless noted otherwise below. Match on the HTTP status code first, and on the `detail` text only where you need to branch on a specific condition — see the accordions further down this page for the exact strings each endpoint sends.
 
 <Note>
-  FastAPI input validation errors (malformed JSON, missing required fields) use a slightly different shape with a `detail` array instead of an `error` object. The field-level `loc` tells you exactly which field failed.
+  FastAPI input validation errors (malformed JSON, missing or mistyped fields) use a `detail` **array** instead, one entry per failing field. The field-level `loc` tells you exactly which field failed.
 </Note>
 
 ```json
 {
   "detail": [
     {
+      "type": "missing",
       "loc": ["body", "amount"],
-      "msg": "field required",
-      "type": "value_error.missing"
+      "msg": "Field required",
+      "input": {}
     }
   ]
 }
 ```
+
+| Field | Description |
+|---|---|
+| `type` | Machine-readable error type, e.g. `missing`, `greater_than` |
+| `loc` | Path to the failing field, e.g. `["body", "amount"]` |
+| `msg` | Human-readable description of what's wrong |
+| `input` | The value that was rejected |
+
+### Unhandled errors (500)
+
+An error the API did not anticipate — an unhandled exception, not one of the specific conditions documented below — is reported in a different, structured shape:
+
+```json
+{
+  "error": {
+    "message": "Internal server error",
+    "category": "system",
+    "request_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+This `error` envelope is specific to unexpected `500`s. Do not build a client that expects it, or an `error.category` field, on a `400`, `401`, `403`, `404`, `409`, `410`, `413`, `415`, `422` or `429` — every one of those returns the plain `detail` string shown above instead.
+
+---
+
+## Response headers
+
+Every response, success or error, carries:
+
+| Header | Meaning |
+|---|---|
+| `X-Request-ID` | UUID identifying this request. Always present, regardless of whether the body itself carries a `request_id` field. This is the one thing to always log. |
+| `X-Process-Time` | Server-side processing time for this request, in milliseconds. |
+
+A request that went through the per-key/per-institution rate limiter also carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` — see [429 — Too many requests](#429--too-many-requests) below.
+
+<Note>
+  `X-Request-ID` and the `request_id` field inside the `error` envelope (unhandled `500`s only — see above) are the same value for that request. For every other error, the header is the only place to find it; most error bodies don't carry a `request_id` field at all.
+</Note>
 
 ---
 
@@ -48,26 +79,36 @@ All errors follow a consistent JSON envelope:
 | `200` | — | Success |
 | `201` | — | Resource created |
 | `202` | — | Accepted (async — webhook received, transaction queued) |
+| `204` | — | Success, no body — logout, and deletes (e.g. an attachment, a case note, a case-alert link) |
 | `207` | — | Multi-Status (batch with partial failures) |
 | `400` | `validation` | Bad request — invalid field values |
 | `401` | `authentication` | Missing or invalid credentials |
 | `403` | `authentication` | Valid credentials but insufficient permissions |
 | `404` | `not_found` | Resource does not exist or is not visible to your institution |
 | `409` | `business_logic` | Conflict — duplicate action or state machine violation |
+| `410` | `business_logic` | The resource existed but is no longer available — a four-eyes approval or KYC verification link expired |
+| `413` | `validation` | File upload exceeds the endpoint's maximum size |
+| `415` | `validation` | File upload's type/extension isn't accepted |
 | `422` | `business_logic` | Business rule violation |
-| `429` | — | Rate limit exceeded — 300 req/min per IP at the gateway (burst 60) |
+| `429` | — | Rate limit exceeded — per-key/institution limit, login lockout, or the gateway's per-IP limit (see below) |
 | `500` | `system` | Unexpected internal error |
 | `502` | `external` | Upstream dependency failure |
 | `503` | `external` | Service temporarily unavailable |
+
+<Note>
+  The `category` column above describes how the API classifies each error internally; it only appears as a response field (`error.category`) on unhandled `500`s. For every other status, use the status code itself plus the `detail` text — see the response shape described above.
+</Note>
 
 ---
 
 ## Error categories
 
+These are the categories the status code table above maps to. As noted there, they appear as an `error.category` field in the response body only for unhandled `500`s — for every other status they're a description of the status code, not something you parse out of the body.
+
 | Category | What it means | What to do |
 |---|---|---|
-| `validation` | A field value is missing, wrong type, or out of range | Fix the payload per `details` |
-| `business_logic` | Structurally valid but violates a rule | Read `message` — e.g. you cannot resolve an already-closed alert |
+| `validation` | A field value is missing, wrong type, or out of range | Fix the payload per `detail` |
+| `business_logic` | Structurally valid but violates a rule | Read `detail` — e.g. you cannot resolve an already-closed alert |
 | `not_found` | Resource doesn't exist or belongs to a different institution | Verify the ID |
 | `authentication` | Bad or missing credentials | Check your API key or re-authenticate |
 | `system` | Bug or infrastructure failure | Retry with back-off; escalate if persistent |
@@ -180,6 +221,40 @@ Returned when:
 
 ---
 
+## 410 — Gone
+
+<AccordionGroup>
+
+<Accordion title="Approval has expired">
+  A four-eyes approval (`POST /approvals/{id}/approve` or `/reject`) was not actioned before its expiry window closed. The original requester must submit the action again to create a new pending approval.
+</Accordion>
+
+<Accordion title="Verification link has expired">
+  The public, single-use KYC document-verification link (`verification_id`) passed its expiry. Issue the customer a new verification session rather than retrying the same link.
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## 413 / 415 — File upload errors
+
+Returned by file-upload endpoints that check type and size before accepting a file — currently `POST /ingestion/upload` (batch CSV / JSON / JSONL / Excel files).
+
+<AccordionGroup>
+
+<Accordion title="Unsupported file type 'X'. Allowed: [...]">
+  `415` — the file's extension isn't one of the types this endpoint accepts. For `POST /ingestion/upload`: `.csv`, `.json`, `.jsonl`, `.xlsx`.
+</Accordion>
+
+<Accordion title="File exceeds maximum size of N MB">
+  `413` — the file is larger than the endpoint's limit. For `POST /ingestion/upload`: 50 MB.
+</Accordion>
+
+</AccordionGroup>
+
+---
+
 ## 422 — Business logic
 
 <AccordionGroup>
@@ -202,9 +277,11 @@ Returned when:
 
 ## 429 — Too many requests
 
-Two independent limits protect the API; either can return `429`.
+Three independent limits protect the API; any of them can return `429`, each with its own `Retry-After`.
 
-**Per API key (and per institution)** — fixed per-minute windows, split by traffic type. Whichever is reached first returns `429` with a `Retry-After` header (seconds until the window resets):
+### Per API key (and per institution)
+
+Fixed per-minute windows, split by traffic type. Whichever is reached first returns `429` with a `Retry-After` header (seconds until the window resets):
 
 | Scope | Write (`POST /ingestion/*`) | Read (everything else) |
 |---|---|---|
@@ -213,7 +290,21 @@ Two independent limits protect the API; either can return `429`.
 
 These are the defaults — your contract may set different values, and an individual key can be given a higher or lower write limit on request.
 
-**Per client IP (gateway backstop)** — a coarser network guard: **300 requests/minute per IP** (burst 60) across all `/api/*`. `GET /api/v1/health` is exempt.
+Every request that goes through this limiter — success or `429` — carries your current quota back in response headers, so you can pace yourself instead of discovering the ceiling by hitting it:
+
+| Header | Meaning |
+|---|---|
+| `X-RateLimit-Limit` | The limit for whichever bucket (key or institution) is closest to its ceiling |
+| `X-RateLimit-Remaining` | Requests left in the current window for that bucket — `0` on a `429` |
+| `X-RateLimit-Reset` | Unix timestamp (seconds) when the current window rolls over |
+
+### Login lockout
+
+Separate from the limit above, and from the gateway limit below: `POST /auth/login` locks out an (email, client IP) pair after **8 failed attempts within a 15-minute window**. A locked-out pair gets `429` with `detail: "Too many failed login attempts. Please try again later."` and `Retry-After: 900` (15 minutes, the lockout duration). A successful login immediately clears the failure counter and any active lock for that pair.
+
+### Per client IP (gateway backstop)
+
+A coarser network guard: **300 requests/minute per IP** (burst 60) across all `/api/*`. `GET /api/v1/health` is exempt.
 
 Honour `Retry-After` and back off. For high volume, prefer `POST /ingestion/batch` (up to 1,000 transactions per request) over many single calls — a batch counts as one request against the limits.
 
@@ -221,7 +312,7 @@ Honour `Retry-After` and back off. For high volume, prefer `POST /ingestion/batc
 
 ## 500 — Internal server error
 
-An unexpected error occurred. The `request_id` in the response uniquely identifies the request in server logs — always include it when contacting support.
+An unexpected error occurred. Both the `request_id` in the response body and the `X-Request-ID` response header uniquely identify the request in server logs — always include one when contacting support.
 
 Retry strategy: exponential back-off starting at 1s, max 4 attempts.
 
@@ -240,7 +331,7 @@ The API degrades gracefully when internal services are unavailable:
 
 Your transaction is not lost in any of these cases.
 
-Retry after 5–10 seconds. If the error persists beyond 2 minutes, contact support with the `request_id`.
+Retry after 5–10 seconds. If the error persists beyond 2 minutes, contact support with the `X-Request-ID`.
 
 ---
 
@@ -248,7 +339,7 @@ Retry after 5–10 seconds. If the error persists beyond 2 minutes, contact supp
 
 Include the following in every support request:
 
-1. The `request_id` from the error response
+1. The `X-Request-ID` response header (and the `request_id` field, if the error was an unhandled `500` with the `error` envelope — see above)
 2. HTTP method and path (e.g. `POST /api/v1/ingestion/transaction`)
 3. Request body (redact any PII)
 4. Full error response body
